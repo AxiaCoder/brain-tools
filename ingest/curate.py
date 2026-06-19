@@ -1,20 +1,72 @@
-"""Curation step: decide what to keep and how to route."""
+"""Curation result dataclass."""
 
-from typing import Dict, Any
-from .pivot import Pivot
+from dataclasses import dataclass
+from typing import Optional
 
 
-def curate(pivot: Pivot) -> Dict[str, Any]:
+@dataclass
+class CurationResult:
+    """Result of content curation."""
+
+    source_id: str
+    category: str  # health, finance, career, learning, dating, social, dev, gaming, smarthome, culture, other
+    keep_link: bool
+    extract_knowledge: bool
+    pitch: str  # One-line description
+    tags: list[str]
+    summary_md: Optional[str]  # Markdown summary, only if extract_knowledge=True
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary."""
+        return {
+            "source_id": self.source_id,
+            "category": self.category,
+            "keep_link": self.keep_link,
+            "extract_knowledge": self.extract_knowledge,
+            "pitch": self.pitch,
+            "tags": self.tags,
+            "summary_md": self.summary_md,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "CurationResult":
+        """Create from dictionary."""
+        return cls(
+            source_id=data["source_id"],
+            category=data["category"],
+            keep_link=data["keep_link"],
+            extract_knowledge=data["extract_knowledge"],
+            pitch=data["pitch"],
+            tags=data.get("tags", []),
+            summary_md=data.get("summary_md"),
+        )
+
+
+# Valid categories (for validation)
+VALID_CATEGORIES = {
+    # Domains
+    "health", "finance", "career", "learning", "dating", "social",
+    # Resources
+    "dev", "gaming", "smarthome", "culture", "other"
+}
+
+
+def validate_curation(result: CurationResult) -> list[str]:
     """
-    Analyze content and decide routing.
-
-    Args:
-        pivot: Pivot object with raw content
+    Validate a curation result.
 
     Returns:
-        Dict with keys:
-            - action: "keep_link" | "extract_knowledge" | "discard"
-            - category: Optional[str] (e.g., "tech", "philosophy")
-            - notes: Optional[str] (curator notes)
+        List of validation errors (empty if valid)
     """
-    raise NotImplementedError("TODO: Implement curation logic")
+    errors = []
+
+    if result.category not in VALID_CATEGORIES:
+        errors.append(f"Invalid category: {result.category}")
+
+    if result.extract_knowledge and not result.summary_md:
+        errors.append("summary_md required when extract_knowledge=True")
+
+    if not result.pitch:
+        errors.append("pitch is required")
+
+    return errors
