@@ -28,11 +28,24 @@ CATEGORY_PATHS = {
 
 
 def get_brain_path() -> Path:
-    """Get the brain path from environment."""
+    """Get the brain path from environment or default."""
     brain_path = os.environ.get("BRAIN_PATH")
-    if not brain_path:
-        raise RuntimeError("BRAIN_PATH environment variable not set")
-    return Path(brain_path)
+    if brain_path:
+        return Path(brain_path)
+
+    # Default paths to try
+    defaults = [
+        Path.home() / "Documents" / "the-brain",
+        Path.home() / "Documents" / "brain",
+    ]
+    for default in defaults:
+        if default.exists():
+            return default
+
+    raise RuntimeError(
+        "BRAIN_PATH not set and no default brain found. "
+        "Set BRAIN_PATH or create ~/Documents/the-brain"
+    )
 
 
 def is_auto_route_enabled() -> bool:
