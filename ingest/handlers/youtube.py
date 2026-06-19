@@ -10,6 +10,7 @@ from typing import Optional
 from pathlib import Path
 
 from ..pivot import Pivot
+from ..stt import transcribe, TranscriptResult
 
 
 class VideoUnavailableError(Exception):
@@ -148,6 +149,53 @@ def fetch_subtitles(video_id: str, langs: list[str] = ["fr", "en"]) -> tuple[str
         return ("", None)
 
 
+def download_audio(video_id: str, output_dir: Path) -> Path:
+    """
+    Download audio from YouTube video.
+
+    Args:
+        video_id: YouTube video ID
+        output_dir: Directory to save the audio file
+
+    Returns:
+        Path to downloaded audio file
+
+    Raises:
+        RuntimeError: If download fails
+    """
+    output_template = str(output_dir / f"{video_id}.%(ext)s")
+
+    try:
+        result = subprocess.run(
+            [
+                "yt-dlp",
+                "-x",  # Extract audio
+                "--audio-format", "mp3",
+                "--audio-quality", "5",  # Medium quality (smaller file)
+                "-o", output_template,
+                f"https://www.youtube.com/watch?v={video_id}"
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120  # Audio download can take longer
+        )
+
+        if result.returncode != 0:
+            raise RuntimeError(f"Failed to download audio: {result.stderr}")
+
+        # Find the downloaded file
+        audio_file = output_dir / f"{video_id}.mp3"
+        if audio_file.exists():
+            return audio_file
+
+        raise RuntimeError(f"Audio file not found after download")
+
+    except FileNotFoundError:
+        raise RuntimeError(
+            "yt-dlp is not installed. Install it with: pip install yt-dlp"
+        )
+
+
 def parse_vtt(content: str) -> str:
     """
     Strip VTT formatting, return plain text.
@@ -197,20 +245,21 @@ def parse_vtt(content: str) -> str:
     return "\n".join(lines)
 
 
-def extract(url: str) -> Pivot:
+def extract(url: str, use_stt_fallback: bool = True) -> Pivot:
     """
     Main entry point: URL -> Pivot.
 
     Args:
         url: YouTube video URL
+        use_stt_fallback: If True, use STT when subtitles unavailable
 
     Returns:
-        Pivot object with video metadata and subtitles
+        Pivot object with video metadata and subtitles/transcript
 
     Raises:
         ValueError: If URL is invalid
         VideoUnavailableError: If video is unavailable
-        RuntimeError: If yt-dlp is not installed
+        RuntimeError: If yt-dlp is not installed or STT fails
     """
     # Extract video ID
     video_id = extract_video_id(url)
@@ -220,6 +269,22 @@ def extract(url: str) -> Pivot:
 
     # Fetch subtitles
     text, lang = fetch_subtitles(video_id)
+
+    # Fallback to STT if no subtitles
+    stt_used = False
+    if not text and use_stt_fallback:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir_path = Path(tmpdir)
+            try:
+                audio_path = download_audio(video_id, tmpdir_path)
+                result = transcribe(str(audio_path))
+                text = result.text
+                lang = result.lang
+                stt_used = True
+            except Exception as e:
+                # STT failed, continue without transcript
+                text = ""
+                lang = None
 
     # Parse published date
     published_at = None
@@ -241,7 +306,8 @@ def extract(url: str) -> Pivot:
         lang=lang,
         raw_text=text,
         meta={
-            "subtitles_available": bool(text),
+            "subtitles_available": bool(text) and not stt_used,
+            "stt_used": stt_used,
             "view_count": info.get("view_count"),
             "like_count": info.get("like_count"),
             "channel_id": info.get("channel_id"),
