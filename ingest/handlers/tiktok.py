@@ -2,6 +2,7 @@
 
 import re
 import subprocess
+import sys
 import json
 import tempfile
 from datetime import datetime
@@ -65,7 +66,7 @@ def fetch_video_info(url: str) -> dict:
     """
     try:
         result = subprocess.run(
-            ["yt-dlp", "--dump-json", url],
+            [sys.executable, "-m", "yt_dlp", "--dump-json", url],
             capture_output=True,
             text=True,
             timeout=30
@@ -104,7 +105,7 @@ def download_audio(url: str, output_dir: Path) -> Path:
     try:
         result = subprocess.run(
             [
-                "yt-dlp",
+                sys.executable, "-m", "yt_dlp",
                 "-x",  # Extract audio
                 "--audio-format", "mp3",
                 "--audio-quality", "5",  # Medium quality

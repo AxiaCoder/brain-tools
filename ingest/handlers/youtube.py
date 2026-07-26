@@ -2,6 +2,7 @@
 
 import re
 import subprocess
+import sys
 import json
 import tempfile
 import os
@@ -65,7 +66,7 @@ def fetch_video_info(video_id: str) -> dict:
     """
     try:
         result = subprocess.run(
-            ["yt-dlp", "--dump-json", f"https://www.youtube.com/watch?v={video_id}"],
+            [sys.executable, "-m", "yt_dlp", "--dump-json", f"https://www.youtube.com/watch?v={video_id}"],
             capture_output=True,
             text=True,
             timeout=30
@@ -111,7 +112,7 @@ def fetch_subtitles(video_id: str, langs: list[str] = ["fr", "en"]) -> tuple[str
         try:
             subprocess.run(
                 [
-                    "yt-dlp",
+                    sys.executable, "-m", "yt_dlp",
                     "--write-subs",
                     "--write-auto-subs",
                     "--sub-langs", lang_string,
@@ -168,7 +169,7 @@ def download_audio(video_id: str, output_dir: Path) -> Path:
     try:
         result = subprocess.run(
             [
-                "yt-dlp",
+                sys.executable, "-m", "yt_dlp",
                 "-x",  # Extract audio
                 "--audio-format", "mp3",
                 "--audio-quality", "5",  # Medium quality (smaller file)

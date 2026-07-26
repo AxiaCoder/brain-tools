@@ -1,6 +1,7 @@
 """Route curation results to destinations."""
 
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -19,10 +20,10 @@ CATEGORY_PATHS = {
     "dating": "domains/dating/captures",
     "social": "domains/social/captures",
     # Resources
-    "dev": "resources/dev",
-    "gaming": "resources/gaming",
-    "smarthome": "resources/smarthome",
-    "culture": "resources/culture",
+    "dev": "resources/dev/captures",
+    "gaming": "resources/gaming/captures",
+    "smarthome": "resources/smarthome/captures",
+    "culture": "resources/culture/captures",
     "other": "inbox",
 }
 
@@ -65,7 +66,7 @@ def generate_markdown(pivot: Pivot, curation: CurationResult) -> str:
         f"source: {pivot.source_type}",
         f"url: {pivot.url}",
         f"proposed_domain: {curation.category}",
-        f"proposed_tags: {curation.tags}",
+        f"tags: {curation.tags}",
         f"status: pending",
         f"ingested_at: {datetime.now().strftime('%Y-%m-%d')}",
         "---",
@@ -109,6 +110,36 @@ def slugify(text: str) -> str:
     return text[:50]
 
 
+def _update_index(dest_dir: Path, category: str, pivot: Pivot, filename: str, date_str: str) -> None:
+    """Create or append to the folder's INDEX.md (auto-maintained capture index)."""
+    index_file = dest_dir / "INDEX.md"
+    title = pivot.title.replace("|", "/")
+    row = f"| {date_str} | {title} | {pivot.source_type} | [{filename}](./{filename}) |"
+
+    if index_file.exists():
+        content = index_file.read_text(encoding="utf-8")
+        content = re.sub(r"^updated:.*$", f"updated: {date_str}", content, count=1, flags=re.MULTILINE)
+        if not content.endswith("\n"):
+            content += "\n"
+        content += row + "\n"
+    else:
+        content = "\n".join([
+            "---",
+            f"scope: Index des captures ingérées ({category}) — auto-maintenu par brain-tools",
+            f'load_when: "capture/vidéo/résumé sur {category}, /ingest"',
+            f"updated: {date_str}",
+            "---",
+            "",
+            f"# Captures — {category}",
+            "",
+            "| Date | Titre | Source | Fichier |",
+            "|------|-------|--------|---------|",
+            row,
+            "",
+        ])
+    index_file.write_text(content, encoding="utf-8")
+
+
 def route_to_brain(pivot: Pivot, curation: CurationResult) -> Optional[Path]:
     """
     Route content to the brain (markdown file).
@@ -138,7 +169,12 @@ def route_to_brain(pivot: Pivot, curation: CurationResult) -> Optional[Path]:
     # Write file
     dest_file = dest_dir / filename
     content = generate_markdown(pivot, curation)
-    dest_file.write_text(content)
+    dest_file.write_text(content, encoding="utf-8")
+
+    # Maintain a per-folder capture index (only for final destinations,
+    # not the inbox staging area during rodage).
+    if is_auto_route_enabled():
+        _update_index(dest_dir, curation.category, pivot, filename, date_str)
 
     return dest_file
 
