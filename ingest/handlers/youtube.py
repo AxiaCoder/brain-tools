@@ -306,6 +306,10 @@ def extract(url: str, use_stt_fallback: bool = True) -> Pivot:
         fetched_at=datetime.now(),
         lang=lang,
         raw_text=text,
+        # Second channel, free: it was already fetched and sitting in meta,
+        # unread. YouTube descriptions carry timestamps, links and corrections
+        # the narration never says out loud.
+        description=info.get("description", "") or "",
         meta={
             "subtitles_available": bool(text) and not stt_used,
             "stt_used": stt_used,

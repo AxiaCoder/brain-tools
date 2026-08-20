@@ -4,11 +4,29 @@ version = "0.1.0"
 description = "Tooling for The Brain knowledge base"
 requires-python = ">=3.11"
 dependencies = [
-    "yt-dlp>=2024.0.0",
+    # curl-cffi extra: TikTok rejects any request that does not look like a
+    # browser. Installing curl_cffi on its own gives a version yt-dlp ignores.
+    "yt-dlp[curl-cffi]>=2026.8.19",
     "groq>=0.4.0",
     "pydantic>=2.0.0",
     "requests>=2.31.0",
     "python-dotenv>=1.0.0",
+    "faster-whisper>=1.1.0",
+    # Carousels: yt-dlp only ever exposes their audio track and a cover.
+    "gallery-dl>=1.30",
+    # Screen channel. ONNX Runtime on CPU - deliberately not an OCR that
+    # drags in torch, and it costs no GPU next to Whisper.
+    "rapidocr-onnxruntime>=1.2",
+    "av>=12.0",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+# CUDA runtime for the local STT backend. ctranslate2 needs cuBLAS and cuDNN
+# but ships neither; without these the local backend silently runs on CPU.
+cuda = [
+    "nvidia-cublas-cu12",
+    "nvidia-cudnn-cu12",
 ]
 
 [build-system]

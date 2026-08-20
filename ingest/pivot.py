@@ -18,5 +18,13 @@ class Pivot:
     published_at: Optional[datetime]
     fetched_at: datetime
     lang: Optional[str]  # ISO 639-1 code (e.g., "fr", "en")
-    raw_text: str  # Transcription or extracted text
+    raw_text: str  # Channel 1 - the voice: transcript or subtitles
     meta: dict  # Platform-specific metadata
+
+    # Three channels, not one. Any of them can carry the whole content and any
+    # of them can be empty: a recipe puts its quantities in the description, a
+    # silent carousel puts everything on screen and leaves the audio to a song.
+    # Merging them is the curator's job - the pivot only has to hand them over.
+    description: str = ""  # Channel 2 - what the author wrote under the post
+    screen_text: str = ""  # Channel 3 - text burned into the images or frames
+    cover_path: Optional[str] = None  # First image, kept so it can be eyeballed

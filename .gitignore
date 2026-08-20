@@ -30,6 +30,8 @@ ENV/
 
 # State
 state/processed/*.json
+# Cover images kept for the curator to eyeball. Media, never committed.
+state/covers/
 
 # IDE
 .vscode/

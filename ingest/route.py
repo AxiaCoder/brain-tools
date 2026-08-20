@@ -17,6 +17,7 @@ CATEGORY_PATHS = {
     "finance": "domains/finance/captures",
     "career": "domains/career/captures",
     "learning": "domains/learning/captures",
+    "ecriture": "domains/ecriture/captures",
     "dating": "domains/dating/captures",
     "social": "domains/social/captures",
     # Resources
@@ -203,16 +204,44 @@ def route_to_bookmarks(pivot: Pivot, curation: CurationResult) -> bool:
     return True
 
 
+def route_to_app(pivot: Pivot, curation: CurationResult) -> Optional[dict]:
+    """
+    Route content to an app (MCP smart-home) instead of a markdown note.
+
+    Returns:
+        {"target": str, "payload": dict} for Claude Code to call, or None.
+
+    Note: same contract as route_to_bookmarks - the tool never reaches the MCP
+    itself, it hands back what should be created. Claude Code makes the call.
+    """
+    if not curation.app_target:
+        return None
+
+    payload = dict(curation.app_payload or {})
+    # The source link is what makes the entry traceable back to the video.
+    payload.setdefault("sourceUrl", pivot.url)
+
+    print(f"[APP:{curation.app_target}] Would create entry from: {pivot.url}")
+    print(f"  Payload keys: {sorted(payload)}")
+
+    return {"target": curation.app_target, "payload": payload}
+
+
 def route(pivot: Pivot, curation: CurationResult) -> dict:
     """
     Route content to all destinations based on curation.
 
+    The three destinations are independent: a recipe can go to the kitchen app
+    and be bookmarked, without ever becoming a note.
+
     Returns:
-        Dict with results: {"brain_path": Path|None, "bookmarked": bool}
+        Dict with results:
+        {"brain_path": Path|None, "bookmarked": bool, "app": dict|None}
     """
     results = {
         "brain_path": None,
         "bookmarked": False,
+        "app": None,
     }
 
     # Route to brain
@@ -222,5 +251,9 @@ def route(pivot: Pivot, curation: CurationResult) -> dict:
     # Route to bookmarks
     if curation.keep_link:
         results["bookmarked"] = route_to_bookmarks(pivot, curation)
+
+    # Route to an app (kitchen, ...)
+    if curation.app_target:
+        results["app"] = route_to_app(pivot, curation)
 
     return results
