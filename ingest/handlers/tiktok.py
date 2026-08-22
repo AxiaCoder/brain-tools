@@ -75,7 +75,13 @@ def fetch_video_info(url: str) -> dict:
     """
     try:
         result = subprocess.run(
-            [sys.executable, "-m", "yt_dlp", "--dump-json", url],
+            # --ignore-no-formats-error: some photo carousels make yt-dlp bail
+            # out with "No video formats found!" instead of listing a lone
+            # audio track. Without the flag the post never reaches the carousel
+            # detection below - it dies as a hard failure while gallery-dl can
+            # read it perfectly well. Measured on 7657081405653962017.
+            [sys.executable, "-m", "yt_dlp", "--dump-json",
+             "--ignore-no-formats-error", url],
             capture_output=True,
             text=True,
             timeout=30
@@ -307,7 +313,7 @@ def extract(url: str) -> Pivot:
     # audio stream and nothing else. Detected here rather than by the URL alone,
     # because both forms of the link are in circulation.
     formats = info.get("formats") or []
-    if formats and all(f.get("vcodec") in (None, "none") for f in formats):
+    if not formats or all(f.get("vcodec") in (None, "none") for f in formats):
         return extract_photo(url)
 
     # One pass, three channels. The file is downloaded once and both the audio

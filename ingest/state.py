@@ -34,6 +34,11 @@ from pathlib import Path
 from typing import Optional
 
 STATE_DIR = Path(__file__).parent.parent / "state" / "processed"
+# Extracted pivots waiting to be curated. A queue, not an archive: mark_done
+# deletes the file. This is not the media cache turned down on 2026-08-20 -
+# that one kept the *video* so the screen could be read a second time. This
+# keeps the text already extracted, ~3 KB, produced once and consumed once.
+PIVOT_DIR = Path(__file__).parent.parent / "state" / "pivots"
 
 # The handler returned, nothing has been written to a destination yet.
 STATUS_EXTRACTED = "extracted"
@@ -42,6 +47,8 @@ STATUS_DONE = "done"
 # Extraction failed. Skipped by default so a dead video does not loop, but
 # listed by `report` and replayable with --retry-errors.
 STATUS_ERROR = "error"
+
+TAB = chr(9)
 
 
 def state_file(source_type: str, source_id: str) -> Path:
@@ -100,9 +107,40 @@ def _write(record: dict) -> Path:
     return path
 
 
+def pivot_file(source_type: str, source_id: str) -> Path:
+    return PIVOT_DIR / f"{source_type}_{source_id}.json"
+
+
+def save_pivot(pivot) -> Path:
+    """Persist an extracted pivot so curation can run without the network."""
+    PIVOT_DIR.mkdir(parents=True, exist_ok=True)
+    path = pivot_file(pivot.source_type, pivot.source_id)
+    payload = dict(vars(pivot))
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=str),
+                    encoding="utf-8")
+    return path
+
+
+def load_pivot(source_type: str, source_id: str) -> Optional[dict]:
+    path = pivot_file(source_type, source_id)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"[state] unreadable pivot {path.name}: {e}", file=sys.stderr)
+        return None
+
+
 def mark_extracted(source_type: str, source_id: str, url: str,
-                   title: str = None, author: str = None) -> Path:
-    """Handler returned. Nothing is routed yet, and that is the point."""
+                   title: str = None, author: str = None,
+                   pivot_path: str = None) -> Path:
+    """Handler returned. Nothing is routed yet, and that is the point.
+
+    ``pivot_path`` is set by the batch extractor: with the pivot on disk the
+    link is resumable without the network, which the single-link path - where
+    the media is thrown away and nothing is kept - is not.
+    """
     return _write({
         "source_type": source_type,
         "source_id": source_id,
@@ -113,6 +151,7 @@ def mark_extracted(source_type: str, source_id: str, url: str,
         "extracted_at": datetime.now().isoformat(timespec="seconds"),
         "completed_at": None,
         "outputs": {"brain": None, "bookmark": False, "app": None},
+        "pivot_path": pivot_path,
         "error": None,
     })
 
@@ -139,6 +178,10 @@ def mark_done(source_type: str, source_id: str, brain: str = None,
         "error": None,
     })
     record.pop("legacy", None)
+    # The queue entry has served its purpose. Keeping it would turn a work
+    # queue into an archive nobody prunes.
+    record.pop("pivot_path", None)
+    pivot_file(source_type, source_id).unlink(missing_ok=True)
     return _write(record)
 
 
@@ -263,6 +306,12 @@ def _fmt(record: dict) -> str:
 
 
 def main(argv=None) -> int:
+    # The Windows console is cp1252: titles come out as mojibake and a stray
+    # emoji raises UnicodeEncodeError mid-listing. Force UTF-8 on the way out.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError):
+        pass
     parser = argparse.ArgumentParser(prog="python -m ingest.state", description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -277,6 +326,13 @@ def main(argv=None) -> int:
     p_pending.add_argument("--verbose", action="store_true")
 
     sub.add_parser("report", help="compteurs et liens restes en plan")
+
+    p_ready = sub.add_parser("ready", help="pivots extraits en attente de curation")
+    p_ready.add_argument("n", nargs="?", type=int, default=20)
+
+    p_show = sub.add_parser("show", help="le pivot d un lien, pour la curation")
+    p_show.add_argument("--type", required=True)
+    p_show.add_argument("--id", required=True)
 
     p_done = sub.add_parser("done", help="marquer un lien comme route")
     p_done.add_argument("--type", required=True)
@@ -320,14 +376,45 @@ def main(argv=None) -> int:
         print(f"{len(records)} liens en etat : {detail}")
         stuck = [r for r in records if r["status"] == STATUS_EXTRACTED]
         errors = [r for r in records if r["status"] == STATUS_ERROR]
-        if stuck:
-            print(f"\n{len(stuck)} extrait(s) jamais route(s) - relancer /ingest sur ces liens :")
-            for record in stuck:
+        ready = [r for r in stuck if r.get("pivot_path")]
+        redo = [r for r in stuck if not r.get("pivot_path")]
+        if ready:
+            print()
+            print(f"{len(ready)} pivot(s) en attente de curation - state show puis /ingest :")
+            for record in ready:
+                print(f"  {record['source_type']}_{record['source_id']}  {record.get('title') or ''}"[:110])
+        if redo:
+            print()
+            print(f"{len(redo)} extrait(s) sans pivot - a re-extraire :")
+            for record in redo:
                 print(f"  {record.get('url') or record['source_id']}")
         if errors:
             print(f"\n{len(errors)} en erreur - rejouables avec --retry-errors :")
             for record in errors:
                 print(f"  {record.get('url') or record['source_id']} : {(record.get('error') or '')[:80]}")
+        return 0
+
+    if args.cmd == "ready":
+        waiting = [r for r in all_records()
+                   if r["status"] == STATUS_EXTRACTED and r.get("pivot_path")]
+        # Oldest first: the pivot that has waited longest is the one most
+        # likely to be forgotten.
+        waiting.sort(key=lambda r: r.get("extracted_at") or "")
+        if not waiting:
+            print("Aucun pivot en attente.")
+            return 0
+        for record in waiting[: args.n]:
+            print(TAB.join([record["source_type"], record["source_id"],
+                            (record.get("title") or "")[:70]]))
+        print(f"# {len(waiting)} en attente", file=sys.stderr)
+        return 0
+
+    if args.cmd == "show":
+        pivot = load_pivot(args.type, args.id)
+        if pivot is None:
+            print(f"Aucun pivot pour {args.type}_{args.id}", file=sys.stderr)
+            return 1
+        print(json.dumps(pivot, indent=2, ensure_ascii=False))
         return 0
 
     if args.cmd == "done":
