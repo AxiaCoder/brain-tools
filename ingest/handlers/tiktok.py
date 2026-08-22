@@ -28,6 +28,7 @@ def extract_video_id(url: str) -> str:
     - https://www.tiktok.com/@user/video/1234567890
     - https://vm.tiktok.com/ABC123/
     - https://www.tiktok.com/t/ABC123/
+    - https://www.tiktokv.com/share/video/1234567890/   (data export form)
 
     Args:
         url: TikTok URL
@@ -42,6 +43,12 @@ def extract_video_id(url: str) -> str:
         r'tiktok\.com/@[^/]+/(?:video|photo)/(\d+)',  # Video or photo carousel
         r'vm\.tiktok\.com/([a-zA-Z0-9]+)',  # Short URL
         r'tiktok\.com/t/([a-zA-Z0-9]+)',    # Short URL alternative
+        # The form used by every link in the TikTok data export. The id is
+        # written in clear, so no redirect has to be resolved: the HTTP hop
+        # only rewrites tiktokv.com -> tiktok.com and never reaches the
+        # canonical @user/video/<id>, which the page builds in JavaScript.
+        # yt-dlp and gallery-dl both accept this URL as-is.
+        r'tiktokv?\.com/share/(?:video|photo)/(\d+)',
     ]
 
     for pattern in patterns:

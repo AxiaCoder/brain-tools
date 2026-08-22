@@ -23,24 +23,19 @@ Usage:
         else:
             print(f"Success: {pivot.title}")
 
-State tracking:
-    - Processed URLs are tracked in state/processed/{source_type}_{source_id}.json
-    - Both successful and failed URLs are tracked to avoid retrying errors
+State tracking (see ingest/state.py):
+    - One record per link, state/processed/{source_type}_{source_id}.json
+    - Marked ``extracted`` here; only routing marks it ``done``. An unfinished
+      link is therefore re-processed rather than skipped for good.
+    - Errors are recorded and skipped, unless retry_errors=True
     - Use skip_if_processed=False to force reprocessing
 """
 
-import json
-import re
-from datetime import datetime
-from pathlib import Path
 from typing import Optional
 
 from .pivot import Pivot
 from .handlers import youtube, tiktok
-
-
-# State directory for idempotence
-STATE_DIR = Path(__file__).parent.parent / "state" / "processed"
+from . import state
 
 
 def detect_source_type(url: str) -> str:
@@ -56,30 +51,13 @@ def detect_source_type(url: str) -> str:
     if any(domain in url_lower for domain in ["youtube.com", "youtu.be"]):
         return "youtube"
 
-    # TikTok
-    if any(domain in url_lower for domain in ["tiktok.com", "vm.tiktok.com"]):
+    # TikTok. "tiktokv.com" is not a suffix of "tiktok.com" - the v sits in
+    # between - so it needs its own entry. Every link in the TikTok data export
+    # uses that domain, which is why none of them were recognised before.
+    if any(domain in url_lower for domain in ["tiktok.com", "vm.tiktok.com", "tiktokv.com"]):
         return "tiktok"
 
     return "unknown"
-
-
-def is_processed(source_type: str, source_id: str) -> bool:
-    """Check if this source has already been processed."""
-    state_file = STATE_DIR / f"{source_type}_{source_id}.json"
-    return state_file.exists()
-
-
-def mark_processed(source_type: str, source_id: str, status: str = "ok", error: str = None):
-    """Mark a source as processed."""
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    state_file = STATE_DIR / f"{source_type}_{source_id}.json"
-    state = {
-        "processed_at": datetime.now().isoformat(),
-        "status": status,
-    }
-    if error:
-        state["error"] = error
-    state_file.write_text(json.dumps(state, indent=2))
 
 
 def extract_source_id(url: str, source_type: str) -> str:
@@ -92,13 +70,15 @@ def extract_source_id(url: str, source_type: str) -> str:
         raise ValueError(f"Unknown source type: {source_type}")
 
 
-def dispatch(url: str, skip_if_processed: bool = True) -> Optional[Pivot]:
+def dispatch(url: str, skip_if_processed: bool = True,
+             retry_errors: bool = False) -> Optional[Pivot]:
     """
-    Main entry point: URL -> Pivot (or None if already processed).
+    Main entry point: URL -> Pivot (or None if already handled).
 
     Args:
         url: URL to process
-        skip_if_processed: If True, skip already-processed URLs
+        skip_if_processed: If True, skip links already routed to their outputs
+        retry_errors: If True, replay links whose extraction previously failed
 
     Returns:
         Pivot object, or None if skipped
@@ -115,8 +95,10 @@ def dispatch(url: str, skip_if_processed: bool = True) -> Optional[Pivot]:
     # Extract ID for idempotence check
     source_id = extract_source_id(url, source_type)
 
-    # Check idempotence
-    if skip_if_processed and is_processed(source_type, source_id):
+    # Check idempotence. A link left in ``extracted`` is not skipped: it was
+    # downloaded and transcribed but never routed anywhere, and the media was
+    # thrown away, so resuming it means doing the pass again.
+    if skip_if_processed and state.should_skip(source_type, source_id, retry_errors):
         return None
 
     # Route to handler
@@ -128,17 +110,20 @@ def dispatch(url: str, skip_if_processed: bool = True) -> Optional[Pivot]:
         else:
             raise ValueError(f"No handler for: {source_type}")
 
-        # Mark as processed
-        mark_processed(source_type, source_id, status="ok")
+        # Extracted, not finished. route() has not run yet; whoever routes is
+        # responsible for calling state.mark_done with the real destinations.
+        state.mark_extracted(source_type, source_id, url,
+                             title=pivot.title, author=pivot.author)
         return pivot
 
     except Exception as e:
         # Mark as error but don't crash the batch
-        mark_processed(source_type, source_id, status="error", error=str(e))
+        state.mark_error(source_type, source_id, url, f"{type(e).__name__}: {e}")
         raise
 
 
-def dispatch_batch(urls: list[str], skip_if_processed: bool = True) -> list[tuple[str, Optional[Pivot], Optional[str]]]:
+def dispatch_batch(urls: list[str], skip_if_processed: bool = True,
+                   retry_errors: bool = False) -> list[tuple[str, Optional[Pivot], Optional[str]]]:
     """
     Process multiple URLs.
 
@@ -148,7 +133,7 @@ def dispatch_batch(urls: list[str], skip_if_processed: bool = True) -> list[tupl
     results = []
     for url in urls:
         try:
-            pivot = dispatch(url, skip_if_processed)
+            pivot = dispatch(url, skip_if_processed, retry_errors)
             results.append((url, pivot, None))
         except Exception as e:
             results.append((url, None, str(e)))

@@ -29,7 +29,9 @@ ENV/
 .env
 
 # State
-state/processed/*.json
+# state/processed/*.json is deliberately NOT ignored: the records are the
+# idempotence, and ignoring them kept it local to one machine. One small file
+# per link, so two machines ingesting different links never conflict.
 # Cover images kept for the curator to eyeball. Media, never committed.
 state/covers/
 
