@@ -157,7 +157,8 @@ def mark_extracted(source_type: str, source_id: str, url: str,
 
 
 def mark_done(source_type: str, source_id: str, brain: str = None,
-              bookmark: bool = False, app: str = None) -> Path:
+              bookmark: bool = False, app: str = None,
+              discarded: bool = False, reason: str = None) -> Path:
     """Outputs are written. Only now is the link finished.
 
     Keeps whatever the extraction step recorded (url, title, author) so a link
@@ -175,6 +176,11 @@ def mark_done(source_type: str, source_id: str, brain: str = None,
         "status": STATUS_DONE,
         "completed_at": datetime.now().isoformat(timespec="seconds"),
         "outputs": {"brain": brain, "bookmark": bool(bookmark), "app": app},
+        # A curated-then-dropped link and a link that produced nothing by
+        # accident are both "done with empty outputs". Over hundreds of links
+        # that difference is worth a field.
+        "discarded": bool(discarded),
+        "discard_reason": reason if discarded else None,
         "error": None,
     })
     record.pop("legacy", None)
@@ -298,6 +304,8 @@ def _fmt(record: dict) -> str:
         dests.append("bookmark")
     if outputs.get("app"):
         dests.append(f"app:{outputs['app']}")
+    if record.get("discarded"):
+        dests.append("ecarte" + (f" ({record['discard_reason']})" if record.get("discard_reason") else ""))
     if record.get("error"):
         dests.append(f"erreur:{record['error'][:60]}")
     tail = " | ".join(dests) or "-"
@@ -340,6 +348,9 @@ def main(argv=None) -> int:
     p_done.add_argument("--brain")
     p_done.add_argument("--bookmark", action="store_true")
     p_done.add_argument("--app")
+    p_done.add_argument("--discard", action="store_true",
+                        help="cure puis ecarte : aucune destination, volontairement")
+    p_done.add_argument("--reason", help="pourquoi ecarte")
 
     args = parser.parse_args(argv)
 
@@ -418,7 +429,8 @@ def main(argv=None) -> int:
         return 0
 
     if args.cmd == "done":
-        path = mark_done(args.type, args.id, brain=args.brain, bookmark=args.bookmark, app=args.app)
+        path = mark_done(args.type, args.id, brain=args.brain, bookmark=args.bookmark,
+                         app=args.app, discarded=args.discard, reason=args.reason)
         print(f"done -> {path}")
         return 0
 

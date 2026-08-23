@@ -62,6 +62,11 @@ def generate_markdown(pivot: Pivot, curation: CurationResult) -> str:
     Uses the format defined in the ingest skill.
     """
     # Frontmatter
+    # A consolidated capture is built from several videos. Declaring only the
+    # carrier's url would leave the other sources findable in state/processed
+    # and nowhere else - the note would claim one origin and have several.
+    extra = list((pivot.meta or {}).get("extra_urls") or [])
+
     lines = [
         "---",
         f"source: {pivot.source_type}",
@@ -70,6 +75,13 @@ def generate_markdown(pivot: Pivot, curation: CurationResult) -> str:
         f"tags: {curation.tags}",
         f"status: pending",
         f"ingested_at: {datetime.now().strftime('%Y-%m-%d')}",
+    ]
+    if extra:
+        lines.append(f"sources: {len(extra) + 1}")
+        lines.append("source_urls:")
+        for one in [pivot.url, *extra]:
+            lines.append(f"  - {one}")
+    lines += [
         "---",
         "",
         f"# {pivot.title}",
@@ -153,11 +165,14 @@ def route_to_brain(pivot: Pivot, curation: CurationResult) -> Optional[Path]:
 
     brain_path = get_brain_path()
 
-    # Determine destination
+    # Determine destination. During rodage everything stays in the inbox, but
+    # split by proposed domain: a flat inbox of two hundred captures cannot be
+    # reread. The subfolders are a scaffold for the catch-up, not a convention -
+    # once the backlog is absorbed the inbox goes back to being flat.
     if is_auto_route_enabled():
         rel_path = CATEGORY_PATHS.get(curation.category, "inbox")
     else:
-        rel_path = "inbox"
+        rel_path = f"inbox/{curation.category}"
 
     dest_dir = brain_path / rel_path
     dest_dir.mkdir(parents=True, exist_ok=True)
