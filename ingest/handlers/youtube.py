@@ -28,6 +28,7 @@ def extract_video_id(url: str) -> str:
     - https://youtu.be/VIDEO_ID
     - https://www.youtube.com/embed/VIDEO_ID
     - https://www.youtube.com/v/VIDEO_ID
+    - https://www.youtube.com/shorts/VIDEO_ID
 
     Args:
         url: YouTube URL
@@ -39,7 +40,7 @@ def extract_video_id(url: str) -> str:
         ValueError: If URL is not a valid YouTube URL
     """
     patterns = [
-        r'(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/|youtube\.com/v/)([a-zA-Z0-9_-]{11})',
+        r'(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/|youtube\.com/v/|youtube\.com/shorts/)([a-zA-Z0-9_-]{11})',
     ]
 
     for pattern in patterns:

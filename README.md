@@ -18,10 +18,11 @@ pip install -e .
 - `yt-dlp` (pour YouTube)
 - `groq` (pour LLM processing)
 
-## Quick test
+## Tests
 
 ```bash
-python test_youtube.py
+pip install -e ".[dev]"
+python -m pytest
 ```
 
 ## Spec

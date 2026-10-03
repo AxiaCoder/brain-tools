@@ -51,7 +51,7 @@ def get_brain_path() -> Path:
 
 
 def is_auto_route_enabled() -> bool:
-    """Check if auto-routing is enabled (vs inbox staging)."""
+    """Check if captures go straight to their domain instead of inbox/<category>/."""
     return os.environ.get("AUTO_ROUTE", "false").lower() == "true"
 
 
@@ -165,10 +165,11 @@ def route_to_brain(pivot: Pivot, curation: CurationResult) -> Optional[Path]:
 
     brain_path = get_brain_path()
 
-    # Determine destination. During rodage everything stays in the inbox, but
-    # split by proposed domain: a flat inbox of two hundred captures cannot be
-    # reread. The subfolders are a scaffold for the catch-up, not a convention -
-    # once the backlog is absorbed the inbox goes back to being flat.
+    # Determine destination. Captures land in inbox/<category>/ and leave only
+    # by a human filing pass; the subfolders are the structure, not a scaffold.
+    # AUTO_ROUTE stays false on purpose - an inbox is what makes the unfiled
+    # backlog visible, and filing means merging captures into a domain, not
+    # moving them.
     if is_auto_route_enabled():
         rel_path = CATEGORY_PATHS.get(curation.category, "inbox")
     else:
@@ -188,7 +189,7 @@ def route_to_brain(pivot: Pivot, curation: CurationResult) -> Optional[Path]:
     dest_file.write_text(content, encoding="utf-8")
 
     # Maintain a per-folder capture index (only for final destinations,
-    # not the inbox staging area during rodage).
+    # not the inbox).
     if is_auto_route_enabled():
         _update_index(dest_dir, curation.category, pivot, filename, date_str)
 
