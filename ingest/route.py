@@ -2,6 +2,7 @@
 
 import os
 import re
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -111,10 +112,10 @@ def generate_markdown(pivot: Pivot, curation: CurationResult) -> str:
 
 
 def slugify(text: str) -> str:
-    """Convert text to URL-friendly slug."""
-    import re
-    # Lowercase
-    text = text.lower()
+    """Convert text to a URL-friendly slug. Diacritics are dropped (société -> societe) and œ/æ become oe/ae; other non-ASCII letters (ß, ø, ł) become hyphens (Straße -> stra-e)."""
+    text = text.lower().replace("œ", "oe").replace("æ", "ae")
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(c for c in text if not unicodedata.combining(c))
     # Replace spaces and special chars with hyphens
     text = re.sub(r'[^a-z0-9]+', '-', text)
     # Remove leading/trailing hyphens
