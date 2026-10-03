@@ -3,7 +3,7 @@ from datetime import datetime
 import pytest
 
 from ingest import route
-from ingest.curate import CurationResult
+from ingest.curate import VALID_CATEGORIES, CurationResult
 from ingest.pivot import Pivot
 
 FIXED_NOW = datetime(2026, 9, 30, 14, 0, 0)
@@ -205,12 +205,6 @@ def test_route_to_brain_with_auto_route_uses_category_path(isolated_brain, monke
     assert path == isolated_brain / "domains" / "ecriture" / "captures" / f"{DATE}-hello-world.md"
 
 
-def test_route_to_brain_auto_route_unknown_category_falls_back_to_inbox(isolated_brain, monkeypatch):
-    monkeypatch.setenv("AUTO_ROUTE", "true")
-    path = route.route_to_brain(make_pivot(title="X"), make_curation(category="nope"))
-    assert path.parent == isolated_brain / "inbox"
-
-
 def test_route_to_brain_with_auto_route_creates_index(isolated_brain, monkeypatch):
     monkeypatch.setenv("AUTO_ROUTE", "true")
     path = route.route_to_brain(make_pivot(title="Hello | World"), make_curation())
@@ -259,7 +253,7 @@ def test_route_to_app_returns_none_without_target():
 
 
 def test_route_to_app_returns_target_and_payload_with_source_url():
-    curation = make_curation(app_target="kitchen", app_payload={"name": "Tarte"})
+    curation = make_curation(extract_knowledge=False, app_target="kitchen", app_payload={"name": "Tarte"})
     assert route.route_to_app(make_pivot(), curation) == {
         "target": "kitchen",
         "payload": {"name": "Tarte", "sourceUrl": URL},
@@ -267,19 +261,21 @@ def test_route_to_app_returns_target_and_payload_with_source_url():
 
 
 def test_route_to_app_keeps_explicit_source_url():
-    curation = make_curation(app_target="kitchen", app_payload={"sourceUrl": "https://other"})
+    curation = make_curation(extract_knowledge=False, app_target="kitchen",
+                             app_payload={"sourceUrl": "https://other"})
     assert route.route_to_app(make_pivot(), curation)["payload"]["sourceUrl"] == "https://other"
 
 
 def test_route_to_app_does_not_mutate_curation_payload():
     payload = {"name": "Tarte"}
-    route.route_to_app(make_pivot(), make_curation(app_target="kitchen", app_payload=payload))
+    route.route_to_app(make_pivot(), make_curation(extract_knowledge=False, app_target="kitchen",
+                                                   app_payload=payload))
     assert payload == {"name": "Tarte"}
 
 
-def test_route_to_app_without_payload_carries_only_source_url():
-    result = route.route_to_app(make_pivot(), make_curation(app_target="kitchen"))
-    assert result["payload"] == {"sourceUrl": URL}
+def test_route_to_app_rejects_target_without_payload():
+    with pytest.raises(ValueError, match="app_payload required when app_target is set"):
+        route.route_to_app(make_pivot(), make_curation(extract_knowledge=False, app_target="kitchen"))
 
 
 def test_route_to_bookmarks_returns_false_without_keep_link(capsys):
@@ -335,14 +331,6 @@ def test_route_recipe_goes_to_app_and_bookmark_without_note(isolated_brain):
     assert list(isolated_brain.iterdir()) == []
 
 
-def test_route_all_three_destinations_together(isolated_brain):
-    curation = make_curation(keep_link=True, app_target="kitchen", app_payload={"title": "Tarte"})
-    results = route.route(make_pivot(title="Hello World"), curation)
-    assert results["brain_path"].exists()
-    assert results["bookmarked"] is True
-    assert results["app"]["target"] == "kitchen"
-
-
 # --- validation before routing ----------------------------------------------
 
 def test_route_to_brain_rejects_note_alongside_app_target_and_writes_nothing(isolated_brain):
@@ -369,3 +357,7 @@ def test_route_rejects_invalid_curation_and_writes_nothing(isolated_brain):
     with pytest.raises(ValueError, match="Invalid category: nope"):
         route.route(make_pivot(), curation)
     assert list(isolated_brain.rglob("*")) == []
+
+
+def test_every_valid_category_has_an_auto_route_destination():
+    assert set(route.CATEGORY_PATHS) == VALID_CATEGORIES
