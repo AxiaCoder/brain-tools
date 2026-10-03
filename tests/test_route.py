@@ -341,3 +341,31 @@ def test_route_all_three_destinations_together(isolated_brain):
     assert results["brain_path"].exists()
     assert results["bookmarked"] is True
     assert results["app"]["target"] == "kitchen"
+
+
+# --- validation before routing ----------------------------------------------
+
+def test_route_to_brain_rejects_note_alongside_app_target_and_writes_nothing(isolated_brain):
+    curation = make_curation(extract_knowledge=True, app_target="kitchen", app_payload={"title": "Tarte"})
+    with pytest.raises(ValueError, match="extract_knowledge must be False when app_target is set"):
+        route.route_to_brain(make_pivot(), curation)
+    assert list(isolated_brain.rglob("*")) == []
+
+
+def test_route_to_brain_rejects_unknown_category_and_writes_nothing(isolated_brain):
+    with pytest.raises(ValueError, match="Invalid category: nope"):
+        route.route_to_brain(make_pivot(), make_curation(category="nope"))
+    assert list(isolated_brain.rglob("*")) == []
+
+
+def test_route_to_app_rejects_unknown_app_target():
+    curation = make_curation(extract_knowledge=False, app_target="notion", app_payload={"title": "x"})
+    with pytest.raises(ValueError, match="Invalid app_target: notion"):
+        route.route_to_app(make_pivot(), curation)
+
+
+def test_route_rejects_invalid_curation_and_writes_nothing(isolated_brain):
+    curation = make_curation(category="nope", keep_link=True)
+    with pytest.raises(ValueError, match="Invalid category: nope"):
+        route.route(make_pivot(), curation)
+    assert list(isolated_brain.rglob("*")) == []
