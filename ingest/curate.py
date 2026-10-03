@@ -21,7 +21,7 @@ class CurationResult:
     pitch: str  # One-line description
     tags: list[str]
     summary_md: Optional[str]  # Markdown summary, only if extract_knowledge=True
-    # Third destination, independent of the two above: content that is
+    # Third destination, exclusive with extract_knowledge: content that is
     # structured data for an existing app goes to the app, not to a note.
     app_target: Optional[str] = None  # e.g. "kitchen"
     app_payload: Optional[dict] = None  # arguments for that app's MCP tool

@@ -263,8 +263,9 @@ def route(pivot: Pivot, curation: CurationResult) -> dict:
     """
     Route content to all destinations based on curation.
 
-    The three destinations are independent: a recipe can go to the kitchen app
-    and be bookmarked, without ever becoming a note.
+    The bookmark is independent of the other two; the note and the app entry
+    exclude each other. A recipe can go to the kitchen app and be bookmarked,
+    never also become a note.
 
     Returns:
         Dict with results:
