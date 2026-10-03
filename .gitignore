@@ -29,14 +29,9 @@ ENV/
 .env
 
 # State
-# state/processed/*.json is deliberately NOT ignored: the records are the
-# idempotence, and ignoring them kept it local to one machine. One small file
-# per link, so two machines ingesting different links never conflict.
-# Extracted pivots waiting to be curated. A queue, not an archive: regenerable
-# and local to whichever machine holds the GPU.
-state/pivots/
-# Cover images kept for the curator to eyeball. Media, never committed.
-state/covers/
+# The ingestion state lives outside this repository, at STATE_PATH. A state/
+# folder here is a leftover or a mistake, never something to commit.
+state/
 
 # IDE
 .vscode/
