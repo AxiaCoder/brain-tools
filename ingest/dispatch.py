@@ -87,7 +87,7 @@ def dispatch(url: str, skip_if_processed: bool = True,
         ValueError: Unknown URL type
         Various handler errors
     """
-    # Detect type
+    url = url.strip()
     source_type = detect_source_type(url)
     if source_type == "unknown":
         raise ValueError(f"Unknown URL type: {url}")
