@@ -64,7 +64,7 @@ def generate_markdown(pivot: Pivot, curation: CurationResult) -> str:
     """
     # Frontmatter
     # A consolidated capture is built from several videos. Declaring only the
-    # carrier's url would leave the other sources findable in state/processed
+    # carrier's url would leave the other sources findable in the state directory
     # and nowhere else - the note would claim one origin and have several.
     extra = list((pivot.meta or {}).get("extra_urls") or [])
 

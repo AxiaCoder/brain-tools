@@ -54,7 +54,7 @@ def collect(export: Path) -> list[dict]:
                 dates[match.group(1)] = entry["date"]
 
     rows = []
-    for path in state.PIVOT_DIR.glob("*.json"):
+    for path in state.pivots_dir().glob("*.json"):
         pivot = json.loads(path.read_text(encoding="utf-8"))
         desc = re.sub(r"#\w+", "", re.sub(r"\s+", " ", pivot.get("description") or "")).strip()
         screen = pivot.get("screen_text") or ""

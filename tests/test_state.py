@@ -10,14 +10,13 @@ TIKTOK_URL = "https://www.tiktok.com/@user/video/111"
 
 @pytest.fixture(autouse=True)
 def isolated_state(tmp_path, monkeypatch):
-    monkeypatch.setattr(state, "STATE_DIR", tmp_path / "processed")
-    monkeypatch.setattr(state, "PIVOT_DIR", tmp_path / "pivots")
+    monkeypatch.setenv("STATE_PATH", str(tmp_path))
     return tmp_path
 
 
 def write_raw(name, payload):
-    state.STATE_DIR.mkdir(parents=True, exist_ok=True)
-    path = state.STATE_DIR / name
+    state.processed_dir().mkdir(parents=True, exist_ok=True)
+    path = state.processed_dir() / name
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
 
@@ -182,7 +181,7 @@ def test_normalize_legacy_record_without_status_reads_as_done():
 
 def test_normalize_leaves_current_record_untouched():
     current = {"source_type": "tiktok", "source_id": "1", "status": "extracted", "title": "T"}
-    assert state._normalize(current, state.STATE_DIR / "tiktok_1.json") is current
+    assert state._normalize(current, state.processed_dir() / "tiktok_1.json") is current
 
 
 def test_legacy_record_is_skipped_and_never_rewritten():
@@ -223,7 +222,7 @@ def test_save_pivot_serialises_non_json_values_as_strings():
 def test_load_pivot_absent_or_corrupt_returns_none(capsys):
     assert state.load_pivot("tiktok", "none") is None
 
-    state.PIVOT_DIR.mkdir(parents=True)
+    state.pivots_dir().mkdir(parents=True)
     state.pivot_file("tiktok", "bad").write_text("{oops", encoding="utf-8")
     assert state.load_pivot("tiktok", "bad") is None
     assert "unreadable pivot" in capsys.readouterr().err
@@ -248,7 +247,7 @@ def test_mark_done_without_pivot_does_not_fail():
 def test_all_records_sorted_most_recent_first_and_skips_corrupt(capsys):
     write_raw("tiktok_1.json", {"processed_at": "2026-08-01T10:00:00", "status": "ok"})
     write_raw("tiktok_2.json", {"processed_at": "2026-08-03T10:00:00", "status": "ok"})
-    (state.STATE_DIR / "tiktok_3.json").write_text("garbage", encoding="utf-8")
+    (state.processed_dir() / "tiktok_3.json").write_text("garbage", encoding="utf-8")
 
     ids = [r["source_id"] for r in state.all_records()]
 

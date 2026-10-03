@@ -8,8 +8,7 @@ from ingest import state
 
 @pytest.fixture(autouse=True)
 def isolated_state(tmp_path, monkeypatch):
-    monkeypatch.setattr(state, "STATE_DIR", tmp_path / "processed")
-    monkeypatch.setattr(state, "PIVOT_DIR", tmp_path / "pivots")
+    monkeypatch.setenv("STATE_PATH", str(tmp_path))
     return tmp_path
 
 
@@ -18,8 +17,8 @@ def url_of(source_id):
 
 
 def write_raw(name, payload):
-    state.STATE_DIR.mkdir(parents=True, exist_ok=True)
-    path = state.STATE_DIR / name
+    state.processed_dir().mkdir(parents=True, exist_ok=True)
+    path = state.processed_dir() / name
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
 

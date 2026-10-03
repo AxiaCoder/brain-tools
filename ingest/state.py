@@ -1,6 +1,6 @@
 """Ingestion state: what has been handled, how far, and where it went.
 
-One file per link, ``state/processed/<source_type>_<source_id>.json``. One file
+One file per link, ``<STATE_PATH>/processed/<source_type>_<source_id>.json``. One file
 per link rather than a single ledger is what keeps the state mergeable: two
 machines ingesting different links touch different files, so git never has to
 reconcile competing writes to the same last line.
@@ -27,18 +27,57 @@ Writing (called by the /ingest command once routing has succeeded):
 
 import argparse
 import json
+import os
 import re
 import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-STATE_DIR = Path(__file__).parent.parent / "state" / "processed"
-# Extracted pivots waiting to be curated. A queue, not an archive: mark_done
-# deletes the file. This is not the media cache turned down on 2026-08-20 -
-# that one kept the *video* so the screen could be read a second time. This
-# keeps the text already extracted, ~3 KB, produced once and consumed once.
-PIVOT_DIR = Path(__file__).parent.parent / "state" / "pivots"
+STATE_PATH_VAR = "STATE_PATH"
+
+
+class StatePathError(RuntimeError):
+    """Raised when ``STATE_PATH`` is unset, empty, or not an existing directory."""
+
+
+def state_root() -> Path:
+    """The state directory named by ``STATE_PATH``, read at each call.
+
+    Raises StatePathError when the variable is unset, empty, or does not name
+    an existing directory. The directory itself is never created.
+    """
+    raw = os.environ.get(STATE_PATH_VAR, "").strip()
+    if not raw:
+        raise StatePathError(
+            f"{STATE_PATH_VAR} is not set. Set it in the .env file at the repo root "
+            "to the ingestion state directory (outside the repository)."
+        )
+    root = Path(raw).expanduser()
+    if not root.is_dir():
+        raise StatePathError(
+            f"{STATE_PATH_VAR}={raw} is not an existing directory. Create it, or fix "
+            "the value in the .env file at the repo root."
+        )
+    return root
+
+
+def processed_dir() -> Path:
+    """One record per link handled: ``<STATE_PATH>/processed``."""
+    return state_root() / "processed"
+
+
+def pivots_dir() -> Path:
+    """Extracted pivots waiting to be curated: ``<STATE_PATH>/pivots``.
+
+    A queue, not an archive: mark_done deletes the file.
+    """
+    return state_root() / "pivots"
+
+
+def covers_dir() -> Path:
+    """Cover images kept for a second look: ``<STATE_PATH>/covers``."""
+    return state_root() / "covers"
 
 # The handler returned, nothing has been written to a destination yet.
 STATUS_EXTRACTED = "extracted"
@@ -52,7 +91,7 @@ TAB = chr(9)
 
 
 def state_file(source_type: str, source_id: str) -> Path:
-    return STATE_DIR / f"{source_type}_{source_id}.json"
+    return processed_dir() / f"{source_type}_{source_id}.json"
 
 
 def _normalize(raw: dict, path: Path) -> dict:
@@ -101,19 +140,19 @@ def read_record(source_type: str, source_id: str) -> Optional[dict]:
 
 
 def _write(record: dict) -> Path:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    processed_dir().mkdir(parents=True, exist_ok=True)
     path = state_file(record["source_type"], record["source_id"])
     path.write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
     return path
 
 
 def pivot_file(source_type: str, source_id: str) -> Path:
-    return PIVOT_DIR / f"{source_type}_{source_id}.json"
+    return pivots_dir() / f"{source_type}_{source_id}.json"
 
 
 def save_pivot(pivot) -> Path:
     """Persist an extracted pivot so curation can run without the network."""
-    PIVOT_DIR.mkdir(parents=True, exist_ok=True)
+    pivots_dir().mkdir(parents=True, exist_ok=True)
     path = pivot_file(pivot.source_type, pivot.source_id)
     payload = dict(vars(pivot))
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=str),
@@ -226,10 +265,11 @@ def should_skip(source_type: str, source_id: str, retry_errors: bool = False) ->
 
 def all_records() -> list[dict]:
     """Every record, most recently touched first."""
-    if not STATE_DIR.exists():
+    records_dir = processed_dir()
+    if not records_dir.exists():
         return []
     records = []
-    for path in STATE_DIR.glob("*.json"):
+    for path in records_dir.glob("*.json"):
         try:
             records.append(_normalize(json.loads(path.read_text(encoding="utf-8")), path))
         except (json.JSONDecodeError, OSError) as e:

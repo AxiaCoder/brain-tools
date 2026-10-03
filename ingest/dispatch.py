@@ -24,7 +24,7 @@ Usage:
             print(f"Success: {pivot.title}")
 
 State tracking (see ingest/state.py):
-    - One record per link, state/processed/{source_type}_{source_id}.json
+    - One record per link, <STATE_PATH>/processed/{source_type}_{source_id}.json
     - Marked ``extracted`` here; only routing marks it ``done``. An unfinished
       link is therefore re-processed rather than skipped for good.
     - Errors are recorded and skipped, unless retry_errors=True
@@ -84,9 +84,11 @@ def dispatch(url: str, skip_if_processed: bool = True,
         Pivot object, or None if skipped
 
     Raises:
+        StatePathError: STATE_PATH is not configured - raised before any download
         ValueError: Unknown URL type
         Various handler errors
     """
+    state.state_root()
     url = url.strip()
     source_type = detect_source_type(url)
     if source_type == "unknown":
@@ -129,12 +131,17 @@ def dispatch_batch(urls: list[str], skip_if_processed: bool = True,
 
     Returns:
         List of (url, pivot_or_none, error_or_none)
+
+    Raises:
+        StatePathError: STATE_PATH is not configured - stops the whole batch
     """
     results = []
     for url in urls:
         try:
             pivot = dispatch(url, skip_if_processed, retry_errors)
             results.append((url, pivot, None))
+        except state.StatePathError:
+            raise
         except Exception as e:
             results.append((url, None, str(e)))
     return results

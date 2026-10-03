@@ -39,8 +39,7 @@ PADDED_PHOTO_URL = f" {CLEAN_PHOTO_URL} \n"
 
 @pytest.fixture
 def isolated_state(tmp_path, monkeypatch):
-    monkeypatch.setattr(state, "STATE_DIR", tmp_path / "processed")
-    monkeypatch.setattr(state, "PIVOT_DIR", tmp_path / "pivots")
+    monkeypatch.setenv("STATE_PATH", str(tmp_path))
     return tmp_path
 
 
@@ -95,3 +94,23 @@ def test_dispatch_passes_clean_url_unchanged(received_urls):
 
     assert received_urls == [CLEAN_PHOTO_URL]
     assert state.read_record("tiktok", PHOTO_ID)["url"] == CLEAN_PHOTO_URL
+
+
+@pytest.fixture
+def unconfigured_handler(monkeypatch):
+    monkeypatch.delenv("STATE_PATH", raising=False)
+    calls = []
+    monkeypatch.setattr(dispatch_module.tiktok, "extract", calls.append)
+    return calls
+
+
+def test_dispatch_without_state_path_fails_before_any_download(unconfigured_handler):
+    with pytest.raises(state.StatePathError):
+        dispatch_module.dispatch(CLEAN_PHOTO_URL, skip_if_processed=False)
+    assert unconfigured_handler == []
+
+
+def test_dispatch_batch_without_state_path_stops_instead_of_failing_each_link(unconfigured_handler):
+    with pytest.raises(state.StatePathError):
+        dispatch_module.dispatch_batch([CLEAN_PHOTO_URL, CLEAN_PHOTO_URL], skip_if_processed=False)
+    assert unconfigured_handler == []

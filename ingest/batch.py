@@ -11,7 +11,7 @@ What this does *not* do is curate. It produces material and stops:
     python -m ingest.batch --export <user_data_tiktok.json> [--cluster 2026-08]
                            [--order recent|old] [--limit N] [--retry-errors]
 
-Each pivot is written to state/pivots/, the record is marked ``extracted``
+Each pivot is written to <STATE_PATH>/pivots/, the record is marked ``extracted``
 with its pivot_path, and curation happens later - possibly in another session,
 with no network - through `state ready`, `state show` and /ingest.
 """
