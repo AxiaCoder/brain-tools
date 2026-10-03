@@ -37,22 +37,22 @@ def extract_video_id(url: str) -> str:
         Video ID (numeric ID or short code)
 
     Raises:
-        ValueError: If URL is not a valid TikTok URL
+        ValueError: If URL is not a valid TikTok URL, or its host is not a TikTok one
     """
     patterns = [
-        r'tiktok\.com/@[^/]+/(?:video|photo)/(\d+)',  # Video or photo carousel
-        r'vm\.tiktok\.com/([a-zA-Z0-9]+)',  # Short URL
-        r'tiktok\.com/t/([a-zA-Z0-9]+)',    # Short URL alternative
+        r'^(?:https?://)?(?:(?:www|m)\.)?tiktok\.com/@[^/]+/(?:video|photo)/(\d+)',  # Video or photo carousel
+        r'^(?:https?://)?vm\.tiktok\.com/([a-zA-Z0-9]+)',  # Short URL
+        r'^(?:https?://)?(?:(?:www|m)\.)?tiktok\.com/t/([a-zA-Z0-9]+)',    # Short URL alternative
         # The form used by every link in the TikTok data export. The id is
         # written in clear, so no redirect has to be resolved: the HTTP hop
         # only rewrites tiktokv.com -> tiktok.com and never reaches the
         # canonical @user/video/<id>, which the page builds in JavaScript.
         # yt-dlp and gallery-dl both accept this URL as-is.
-        r'tiktokv?\.com/share/(?:video|photo)/(\d+)',
+        r'^(?:https?://)?(?:(?:www|m)\.)?tiktokv?\.com/share/(?:video|photo)/(\d+)',
     ]
 
     for pattern in patterns:
-        match = re.search(pattern, url)
+        match = re.search(pattern, url.strip())
         if match:
             return match.group(1)
 

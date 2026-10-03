@@ -100,6 +100,23 @@ def test_mark_error_records_error_status_and_message():
     assert record["completed_at"] is None
 
 
+def test_mark_error_keeps_title_and_author_of_extracted_link():
+    state.mark_extracted("tiktok", "111", TIKTOK_URL, title="T", author="A")
+    state.mark_error("tiktok", "111", TIKTOK_URL, "routing failed")
+
+    record = state.read_record("tiktok", "111")
+    assert record["status"] == state.STATUS_ERROR
+    assert record["error"] == "routing failed"
+    assert (record["title"], record["author"]) == ("T", "A")
+
+
+def test_mark_error_without_prior_record_leaves_title_and_author_empty():
+    state.mark_error("tiktok", "111", TIKTOK_URL, "video unavailable")
+
+    record = state.read_record("tiktok", "111")
+    assert (record["title"], record["author"]) == (None, None)
+
+
 def test_read_record_returns_none_when_absent():
     assert state.read_record("tiktok", "missing") is None
 

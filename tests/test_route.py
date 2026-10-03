@@ -280,3 +280,64 @@ def test_route_to_app_does_not_mutate_curation_payload():
 def test_route_to_app_without_payload_carries_only_source_url():
     result = route.route_to_app(make_pivot(), make_curation(app_target="kitchen"))
     assert result["payload"] == {"sourceUrl": URL}
+
+
+def test_route_to_bookmarks_returns_false_without_keep_link(capsys):
+    assert route.route_to_bookmarks(make_pivot(), make_curation(keep_link=False)) is False
+    assert capsys.readouterr().out == ""
+
+
+def test_route_to_bookmarks_announces_link_title_pitch_and_tags(capsys):
+    assert route.route_to_bookmarks(make_pivot(), make_curation(keep_link=True)) is True
+    out = capsys.readouterr().out
+    assert URL in out
+    assert "Qui est la victime de ta société ?" in out
+    assert "Un antagoniste façonné par sa société" in out
+    assert "worldbuilding" in out
+
+
+def test_route_with_no_destination_routes_nothing(isolated_brain):
+    curation = make_curation(extract_knowledge=False, keep_link=False)
+    assert route.route(make_pivot(), curation) == {"brain_path": None, "bookmarked": False, "app": None}
+    assert list(isolated_brain.iterdir()) == []
+
+
+def test_route_brain_only_writes_note_without_bookmark_or_app(isolated_brain):
+    results = route.route(make_pivot(title="Hello World"), make_curation())
+    assert results["brain_path"] == isolated_brain / "inbox" / "ecriture" / f"{DATE}-hello-world.md"
+    assert results["brain_path"].exists()
+    assert results["bookmarked"] is False
+    assert results["app"] is None
+
+
+def test_route_bookmark_only_writes_no_note(isolated_brain):
+    curation = make_curation(extract_knowledge=False, keep_link=True)
+    assert route.route(make_pivot(), curation) == {"brain_path": None, "bookmarked": True, "app": None}
+    assert list(isolated_brain.iterdir()) == []
+
+
+def test_route_app_only_hands_back_target_and_payload(isolated_brain):
+    curation = make_curation(extract_knowledge=False, app_target="kitchen", app_payload={"title": "Tarte"})
+    results = route.route(make_pivot(), curation)
+    assert results["app"] == {"target": "kitchen", "payload": {"title": "Tarte", "sourceUrl": URL}}
+    assert results["brain_path"] is None
+    assert results["bookmarked"] is False
+    assert list(isolated_brain.iterdir()) == []
+
+
+def test_route_recipe_goes_to_app_and_bookmark_without_note(isolated_brain):
+    curation = make_curation(extract_knowledge=False, keep_link=True,
+                             app_target="kitchen", app_payload={"title": "Tarte"})
+    results = route.route(make_pivot(), curation)
+    assert results["brain_path"] is None
+    assert results["bookmarked"] is True
+    assert results["app"]["target"] == "kitchen"
+    assert list(isolated_brain.iterdir()) == []
+
+
+def test_route_all_three_destinations_together(isolated_brain):
+    curation = make_curation(keep_link=True, app_target="kitchen", app_payload={"title": "Tarte"})
+    results = route.route(make_pivot(title="Hello World"), curation)
+    assert results["brain_path"].exists()
+    assert results["bookmarked"] is True
+    assert results["app"]["target"] == "kitchen"

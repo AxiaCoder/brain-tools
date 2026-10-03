@@ -192,12 +192,14 @@ def mark_done(source_type: str, source_id: str, brain: str = None,
 
 
 def mark_error(source_type: str, source_id: str, url: str, error: str) -> Path:
+    """Extraction failed. Keeps the title and author of an earlier extraction, if any."""
+    previous = read_record(source_type, source_id) or {}
     return _write({
         "source_type": source_type,
         "source_id": source_id,
         "url": url,
-        "title": None,
-        "author": None,
+        "title": previous.get("title"),
+        "author": previous.get("author"),
         "status": STATUS_ERROR,
         "extracted_at": datetime.now().isoformat(timespec="seconds"),
         "completed_at": None,

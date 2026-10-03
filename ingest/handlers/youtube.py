@@ -37,14 +37,15 @@ def extract_video_id(url: str) -> str:
         Video ID (e.g., "dQw4w9WgXcQ")
 
     Raises:
-        ValueError: If URL is not a valid YouTube URL
+        ValueError: If URL is not a valid YouTube URL, or its host is not a YouTube one
     """
     patterns = [
-        r'(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/|youtube\.com/v/|youtube\.com/shorts/)([a-zA-Z0-9_-]{11})',
+        r'^(?:https?://)?(?:(?:www|m)\.)?youtube\.com/(?:watch\?v=|embed/|v/|shorts/)([a-zA-Z0-9_-]{11})',
+        r'^(?:https?://)?youtu\.be/([a-zA-Z0-9_-]{11})',
     ]
 
     for pattern in patterns:
-        match = re.search(pattern, url)
+        match = re.search(pattern, url.strip())
         if match:
             return match.group(1)
 

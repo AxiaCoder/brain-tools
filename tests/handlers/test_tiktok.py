@@ -99,3 +99,54 @@ def test_rewrite_is_idempotent():
 def test_rewrite_leaves_photo_in_handle_untouched():
     url = f"https://www.tiktok.com/@photography/photo/{VIDEO_ID}"
     assert to_video_url(url) == f"https://www.tiktok.com/@photography/video/{VIDEO_ID}"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://evil.com/?u=tiktok.com/@a/video/1",
+        "https://faketiktok.com/@a/video/1",
+        "https://tiktok.com.evil.com/@a/video/1",
+        f"https://evil.com/?u=https://vm.tiktok.com/{SHORT_CODE}",
+        f"https://evil.com/?u=https://www.tiktokv.com/share/video/{VIDEO_ID}",
+        f"ftp://www.tiktok.com/@a/video/{VIDEO_ID}",
+    ],
+)
+def test_rejects_url_whose_host_is_not_tiktok(url):
+    with pytest.raises(ValueError):
+        extract_video_id(url)
+
+
+@pytest.mark.parametrize(
+    "url, expected",
+    [
+        (f"https://tiktok.com/@a/video/{VIDEO_ID}", VIDEO_ID),
+        (f"https://m.tiktok.com/@a/video/{VIDEO_ID}", VIDEO_ID),
+        (f"http://www.tiktok.com/@a/video/{VIDEO_ID}", VIDEO_ID),
+        (f"http://vm.tiktok.com/{SHORT_CODE}/", SHORT_CODE),
+        (f"https://tiktokv.com/share/video/{VIDEO_ID}", VIDEO_ID),
+    ],
+)
+def test_accepts_allowed_hosts_and_plain_http(url, expected):
+    assert extract_video_id(url) == expected
+
+
+@pytest.mark.parametrize(
+    "url, expected",
+    [
+        (f"tiktok.com/@a/video/{VIDEO_ID}", VIDEO_ID),
+        (f"vm.tiktok.com/{SHORT_CODE}/", SHORT_CODE),
+    ],
+)
+def test_accepts_url_pasted_without_scheme(url, expected):
+    assert extract_video_id(url) == expected
+
+
+def test_accepts_url_with_surrounding_whitespace():
+    url = f" https://www.tiktokv.com/share/video/{VIDEO_ID}/ "
+    assert extract_video_id(url) == VIDEO_ID
+
+
+def test_rejects_schemeless_url_whose_host_is_not_tiktok():
+    with pytest.raises(ValueError):
+        extract_video_id(f"evil.com/tiktok.com/@a/video/{VIDEO_ID}")
