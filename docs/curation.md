@@ -9,6 +9,7 @@ one decision, which the code validates before anything is written:
 
 ```json
 {
+  "source_id": "the link's id, from the pivot",
   "category": "health | finance | career | learning | ecriture | dating | social | dev | gaming | smarthome | culture | other",
   "keep_link": true,
   "extract_knowledge": false,
@@ -95,7 +96,7 @@ Three consequences:
 3. A list of nine building blocks is worth nothing on its own. It is worth something compared with
    what already exists — so the note says which ones are already in place and which are missing.
 
-## Why was it saved, before what is it worth
+## Ask why it was saved before asking what it is worth
 
 A bookmark is a gesture, not a link met by chance. The content answers *what is this*; the bookmark
 answers *why this one*. The second question comes first, because it decides the destination.
@@ -109,7 +110,7 @@ Three mistakes made on the same day, all of the same kind:
 
 | Proposed | Answer |
 |---|---|
-| Discard a brunch spot "500 km away" | It is the owner's home town — and the brain already said so |
+| Discard a brunch spot "500 km away" | It is in my home town — and the brain already said so |
 | Discard several videos about a lifestyle no active project covers | "If I saved them, it's because they're part of a project one day" |
 | Discard a text with "nothing actionable" in it | "I kept it because it made me think of someone" |
 
@@ -139,7 +140,7 @@ rate, an amount, an effective date or a count, **it gets checked first** — not
 "to be checked". A note is re-read months later as established fact; "to be checked" does not
 survive that re-reading.
 
-What it gave on seven videos about French sole-trader rules:
+What this turned up across seven videos about French sole-trader rules:
 
 | Written from the videos | What the official sources said |
 |---|---|

@@ -46,8 +46,8 @@ run from Claude Code, and the rules it follows are written down in [docs/curatio
 The code does not trust the answer: `validate_curation` rejects an unknown category, a note without
 a summary, or a recipe that would end up both in the app and in a note.
 
-**Routing** writes the note itself. A bookmark or an app entry is handed back as a payload, and the
-agent creates it through the home server's MCP tools. The state then records what was actually
+**Routing** writes the note itself. Bookmarks and app entries are created by the agent through the
+home server's MCP tools; for an app entry the code builds the payload. The state then records what was actually
 written — not what was decided — so that a link is never processed twice, and a link interrupted
 halfway is never silently lost.
 
@@ -66,6 +66,7 @@ The model is never asked to do what a function can do, and a function is never a
 ```
 ingest/
   dispatch.py       link → handler, idempotence
+  pivot.py          what extraction hands to curation
   handlers/         youtube.py, tiktok.py (videos and photo carousels)
   stt.py            speech-to-text, local or Groq
   screen.py         OCR on frames and slides
@@ -73,6 +74,8 @@ ingest/
   route.py          notes, bookmarks, app payloads
   state.py          one record per link, and its CLI
   batch.py          extract many links in one process (the model loads once)
+  media.py          the one file kept per post: its cover image
+  triage.py         a reading list of extracted links waiting for curation
 tests/              pytest, no network, no GPU
 docs/curation.md    the curation contract
 ```
