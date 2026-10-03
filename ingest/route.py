@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 from .pivot import Pivot
-from .curate import CurationResult
+from .curate import CurationResult, validate_curation
 
 
 # Category to domain/resource mapping
@@ -154,13 +154,24 @@ def _update_index(dest_dir: Path, category: str, pivot: Pivot, filename: str, da
     index_file.write_text(content, encoding="utf-8")
 
 
+def _require_valid(curation: CurationResult) -> None:
+    """Raise ValueError listing every rule the curation breaks; return if it breaks none."""
+    errors = validate_curation(curation)
+    if errors:
+        raise ValueError("Invalid curation: " + "; ".join(errors))
+
+
 def route_to_brain(pivot: Pivot, curation: CurationResult) -> Optional[Path]:
     """
     Route content to the brain (markdown file).
 
     Returns:
         Path to created file, or None if extract_knowledge=False
+
+    Raises:
+        ValueError: the curation fails validate_curation - nothing is written
     """
+    _require_valid(curation)
     if not curation.extract_knowledge:
         return None
 
@@ -172,7 +183,7 @@ def route_to_brain(pivot: Pivot, curation: CurationResult) -> Optional[Path]:
     # backlog visible, and filing means merging captures into a domain, not
     # moving them.
     if is_auto_route_enabled():
-        rel_path = CATEGORY_PATHS.get(curation.category, "inbox")
+        rel_path = CATEGORY_PATHS[curation.category]
     else:
         rel_path = f"inbox/{curation.category}"
 
@@ -230,7 +241,11 @@ def route_to_app(pivot: Pivot, curation: CurationResult) -> Optional[dict]:
 
     Note: same contract as route_to_bookmarks - the tool never reaches the MCP
     itself, it hands back what should be created. Claude Code makes the call.
+
+    Raises:
+        ValueError: the curation fails validate_curation
     """
+    _require_valid(curation)
     if not curation.app_target:
         return None
 
@@ -248,13 +263,18 @@ def route(pivot: Pivot, curation: CurationResult) -> dict:
     """
     Route content to all destinations based on curation.
 
-    The three destinations are independent: a recipe can go to the kitchen app
-    and be bookmarked, without ever becoming a note.
+    The bookmark is independent of the other two; the note and the app entry
+    exclude each other. A recipe can go to the kitchen app and be bookmarked,
+    never also become a note.
 
     Returns:
         Dict with results:
         {"brain_path": Path|None, "bookmarked": bool, "app": dict|None}
+
+    Raises:
+        ValueError: the curation fails validate_curation - no destination is touched
     """
+    _require_valid(curation)
     results = {
         "brain_path": None,
         "bookmarked": False,
