@@ -54,7 +54,8 @@ track set, is a song: ignore the voice entirely and curate on the screen and the
 
 ### Repair, don't copy
 
-- A TikTok `title` is the description cut mid-sentence. Write a real title from the content.
+- A TikTok `title` is the description cut mid-sentence. Write a real title from the content: the
+  agent puts it in the pivot it hands to routing, where it becomes the note's heading and file name.
 - OCR loses accents, swallows short words and adds stray characters. Fix them while writing — the
   fragments are unambiguous. Never copy a misspelling into the brain.
 - OCR fails on exactly the stylised, curved lettering of title slides. When the screen text starts

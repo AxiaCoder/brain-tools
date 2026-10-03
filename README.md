@@ -47,7 +47,8 @@ The code does not trust the answer: `validate_curation` rejects an unknown categ
 a summary, or a recipe that would end up both in the app and in a note.
 
 **Routing** writes the note itself. Bookmarks and app entries are created by the agent through the
-home server's MCP tools; for an app entry the code builds the payload. The state then records what was actually
+home server's MCP tools; for an app entry the model writes the payload and the code adds the source
+link to it. The state then records what was actually
 written — not what was decided — so that a link is never processed twice, and a link interrupted
 halfway is never silently lost.
 
