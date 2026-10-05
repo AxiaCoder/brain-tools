@@ -755,14 +755,14 @@ def _crime_line(code, year, indicator, count, rate, diffused="diff", complement=
 
 CRIME_LINES = [
     CRIME_HEADER,
-    _crime_line("13074", 2025, "Cambriolages de logement", '"6"', '"2,4823480"'),
-    _crime_line("13074", 2024, "Cambriolages de logement", '"9"', '"3,9000000"'),
-    _crime_line("13074", 2020, "Cambriolages de logement", '"4"', '"1,7000000"'),
-    _crime_line("13074", 2025, "Vols avec armes", "NA", "NA", "ndiff", '"4,5692308";"1,1234425"'),
-    _crime_line("13074", 2025, "Destructions et dégradations volontaires", '"12"', '"2,2185247"'),
-    _crime_line("13074", 2020, "Destructions et dégradations volontaires", "NA", "NA", "ndiff"),
-    _crime_line("13074", 2025, "Vols de véhicule", '"3"', '"0,5"'),
-    _crime_line("13074", 2025, "Violences physiques intrafamiliales", '"2"', '"0,4"'),
+    _crime_line("38185", 2025, "Cambriolages de logement", '"6"', '"2,4823480"'),
+    _crime_line("38185", 2024, "Cambriolages de logement", '"9"', '"3,9000000"'),
+    _crime_line("38185", 2020, "Cambriolages de logement", '"4"', '"1,7000000"'),
+    _crime_line("38185", 2025, "Vols avec armes", "NA", "NA", "ndiff", '"4,5692308";"1,1234425"'),
+    _crime_line("38185", 2025, "Destructions et dégradations volontaires", '"12"', '"2,2185247"'),
+    _crime_line("38185", 2020, "Destructions et dégradations volontaires", "NA", "NA", "ndiff"),
+    _crime_line("38185", 2025, "Vols de véhicule", '"3"', '"0,5"'),
+    _crime_line("38185", 2025, "Violences physiques intrafamiliales", '"2"', '"0,4"'),
     _crime_line("69383", 2025, "Cambriolages de logement", '"500"', '"8,1"'),
 ]
 
@@ -802,7 +802,7 @@ def crime_net(fake_net, monkeypatch):
 
 def test_crime_parses_retained_indicators_of_latest_year(crime_net):
     crime_net()
-    result = crime.fetch("13074")
+    result = crime.fetch("38185")
     assert result["year"] == 2025 and result["base_year"] == 2020
     assert result["file"] == CRIME_URL
     assert result["indicators"]["burglary"] == {
@@ -817,7 +817,7 @@ def test_crime_parses_retained_indicators_of_latest_year(crime_net):
 
 def test_crime_masked_value_is_not_the_comparison_average(crime_net):
     crime_net()
-    armed = crime.fetch("13074")["indicators"]["armed_robbery"]
+    armed = crime.fetch("38185")["indicators"]["armed_robbery"]
     assert armed["masked"] is True
     assert armed["count"] is None and armed["rate_per_mille"] is None
     assert armed["rate_base"] == "inhabitants"
@@ -825,7 +825,7 @@ def test_crime_masked_value_is_not_the_comparison_average(crime_net):
 
 def test_crime_change_is_none_when_base_year_masked(crime_net):
     crime_net()
-    vandalism = crime.fetch("13074")["indicators"]["vandalism"]
+    vandalism = crime.fetch("38185")["indicators"]["vandalism"]
     assert vandalism["count"] == 12 and vandalism["rate_per_mille"] == 2.22
     assert vandalism["rate_change_points"] is None
 
@@ -833,7 +833,7 @@ def test_crime_change_is_none_when_base_year_masked(crime_net):
 @pytest.mark.parametrize("encoding", ["utf-8", "cp1252"])
 def test_crime_reads_accented_labels_in_either_encoding(crime_net, encoding):
     crime_net(encoding=encoding)
-    assert "vandalism" in crime.fetch("13074")["indicators"]
+    assert "vandalism" in crime.fetch("38185")["indicators"]
 
 
 def test_crime_town_absent_has_no_indicators(crime_net):
@@ -849,7 +849,7 @@ def test_crime_arrondissement_is_queried_with_its_own_code(crime_net):
 
 def test_crime_cache_hit_does_not_download_again(crime_net, crime_cache):
     state = crime_net()
-    crime.fetch("13074")
+    crime.fetch("38185")
     crime.fetch("69383")
     assert state["downloads"] == [CRIME_URL]
     assert sorted(f.name for f in crime_cache.iterdir()) == [crime.INDEX_FILE]
@@ -857,16 +857,16 @@ def test_crime_cache_hit_does_not_download_again(crime_net, crime_cache):
 
 def test_crime_new_url_in_catalog_refreshes_the_cache(crime_net):
     state = crime_net()
-    crime.fetch("13074")
+    crime.fetch("38185")
     newer = CRIME_URL.replace("20260709", "20270110")
     state["catalog"] = _catalog(newer)
-    assert crime.fetch("13074")["file"] == newer
+    assert crime.fetch("38185")["file"] == newer
     assert state["downloads"] == [CRIME_URL, newer]
 
 
 def test_crime_failed_download_keeps_previous_index(crime_net, monkeypatch, crime_cache):
     state = crime_net()
-    crime.fetch("13074")
+    crime.fetch("38185")
     state["catalog"] = _catalog(CRIME_URL + "?v2")
 
     def broken(url, path, timeout=None):
@@ -874,17 +874,17 @@ def test_crime_failed_download_keeps_previous_index(crime_net, monkeypatch, crim
 
     monkeypatch.setattr(net, "download", broken)
     with pytest.raises(requests.ConnectionError):
-        crime.fetch("13074")
+        crime.fetch("38185")
     assert sorted(f.name for f in crime_cache.iterdir()) == [crime.INDEX_FILE]
     monkeypatch.setattr(net, "download", lambda *a, **k: pytest.fail("no download expected"))
     state["catalog"] = _catalog()
-    assert crime.fetch("13074")["indicators"]["burglary"]["count"] == 6
+    assert crime.fetch("38185")["indicators"]["burglary"]["count"] == 6
 
 
 def test_crime_catalog_without_communal_file_raises(crime_net):
     crime_net(catalog={"resources": [{"type": "main", "format": "csv", "title": "DEP - x", "url": "u"}]})
     with pytest.raises(LookupError):
-        crime.fetch("13074")
+        crime.fetch("38185")
 
 
 def test_crime_cache_dir_follows_env(monkeypatch, tmp_path):
@@ -960,38 +960,38 @@ def test_fibre_for_arrondissement_uses_parent_commune(fake_net):
 def test_crime_masked_row_drops_its_published_figures(crime_net):
     crime_net(lines=[
         CRIME_HEADER,
-        _crime_line("13074", 2025, "Vols avec armes", '"7"', '"1,3"', "ndiff", '"4,5692308";"1,1234425"'),
+        _crime_line("38185", 2025, "Vols avec armes", '"7"', '"1,3"', "ndiff", '"4,5692308";"1,1234425"'),
     ])
-    armed = crime.fetch("13074")["indicators"]["armed_robbery"]
+    armed = crime.fetch("38185")["indicators"]["armed_robbery"]
     assert (armed["masked"], armed["count"], armed["rate_per_mille"]) == (True, None, None)
 
 
 def test_crime_change_is_none_when_latest_year_masked(crime_net):
     crime_net(lines=[
         CRIME_HEADER,
-        _crime_line("13074", 2025, "Vols avec armes", "NA", "NA", "ndiff"),
-        _crime_line("13074", 2020, "Vols avec armes", '"3"', '"0,6"'),
+        _crime_line("38185", 2025, "Vols avec armes", "NA", "NA", "ndiff"),
+        _crime_line("38185", 2020, "Vols avec armes", '"3"', '"0,6"'),
     ])
-    assert crime.fetch("13074")["indicators"]["armed_robbery"]["rate_change_points"] is None
+    assert crime.fetch("38185")["indicators"]["armed_robbery"]["rate_change_points"] is None
 
 
 def test_crime_change_is_none_when_base_year_absent(crime_net):
-    crime_net(lines=[CRIME_HEADER, _crime_line("13074", 2025, "Vols avec armes", '"3"', '"0,6"')])
-    assert crime.fetch("13074")["indicators"]["armed_robbery"]["rate_change_points"] is None
+    crime_net(lines=[CRIME_HEADER, _crime_line("38185", 2025, "Vols avec armes", '"3"', '"0,6"')])
+    assert crime.fetch("38185")["indicators"]["armed_robbery"]["rate_change_points"] is None
 
 
 def test_crime_unreadable_index_is_rebuilt(crime_net, crime_cache):
     state = crime_net()
     crime_cache.mkdir(parents=True)
     (crime_cache / crime.INDEX_FILE).write_bytes(b"not a sqlite database")
-    assert crime.fetch("13074")["indicators"]["burglary"]["count"] == 6
+    assert crime.fetch("38185")["indicators"]["burglary"]["count"] == 6
     assert state["downloads"] == [CRIME_URL]
 
 
 def test_crime_file_without_retained_indicator_raises_and_leaves_nothing(crime_net, crime_cache):
-    crime_net(lines=[CRIME_HEADER, _crime_line("13074", 2025, "Vols de véhicule", '"3"', '"0,5"')])
+    crime_net(lines=[CRIME_HEADER, _crime_line("38185", 2025, "Vols de véhicule", '"3"', '"0,5"')])
     with pytest.raises(ValueError):
-        crime.fetch("13074")
+        crime.fetch("38185")
     assert list(crime_cache.iterdir()) == []
 
 
@@ -1052,15 +1052,15 @@ def test_crime_catalog_skips_non_main_resources(crime_net):
     catalog = _catalog()
     catalog["resources"].insert(0, doc)
     crime_net(catalog=catalog)
-    assert crime.fetch("13074")["file"] == CRIME_URL
+    assert crime.fetch("38185")["file"] == CRIME_URL
 
 
 def test_render_text_states_crime_years(crime_net):
     crime_net()
-    town = {"query": "x", "code": "13074", "name": "Peyrolles", "sources": {
+    town = {"query": "x", "code": "38185", "name": "Grenoble", "sources": {
         "rents": {"segments": {}}, "risks": {"risks": []},
         "water": {"samples": 0, "last_sample_date": None},
-        "crime": crime.fetch("13074"), "fibre": {"ftth_share": None},
+        "crime": crime.fetch("38185"), "fibre": {"ftth_share": None},
     }}
     text = compare_towns.render_text([town])
     assert "offences recorded in 2025" in text and "since 2020" in text
