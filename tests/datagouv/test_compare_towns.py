@@ -1727,3 +1727,17 @@ def test_no_answer_at_all_is_not_a_missing_boundary(fake_net, overpass_pauses):
     with pytest.raises(transport.OverpassError) as raised:
         transport.fetch("69383")
     assert not isinstance(raised.value, transport.BoundaryNotFound)
+
+
+@pytest.mark.parametrize("tags", [
+    {"route": "bus", "ref": "N01", "network": "Noctilien", "service": "night"},
+    {"route": "bus", "ref": "PL4", "network": "TCL", "service": "night"},
+    {"route": "bus", "ref": "X75", "network": "Cars Région Express", "service": "national"},
+    {"route": "trolleybus", "ref": "C3", "network": "TCL", "service": "night"},
+])
+def test_night_and_national_buses_stay_bus_lines(tags):
+    assert transport.route_mode(tags) == "bus"
+
+
+def test_international_bus_service_is_a_coach():
+    assert transport.route_mode({"route": "bus", "ref": "Lyon - Genève", "service": "international"}) is None

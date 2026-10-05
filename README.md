@@ -125,10 +125,11 @@ of the route master that groups its directions when the master has one, otherwis
 when neither has a ref, the master's name, else the route's. Refs compare without accents, case,
 punctuation, spaces or leading zeros, so two lines with the same ref count once even on two networks,
 and a ref `a;b` counts as two lines. Light rail counts as tram, trolleybus as bus. Bus lines leave out
-long-distance coaches: a long-distance service, or a FlixBus, BlaBlaCar, Eurolines, Ouibus or Alsa
-network, operator or brand. Trains are regional and commuter lines only — network TER, RER or
-Transilien, or a regional, commuter or suburban service — never a TGV, Ouigo, Intercités, ICE or any
-long-distance, night or high-speed service. A metro, tram or train stop mapped twice — `Guillotière`
+long-distance coaches: a `long_distance` or `international` service, or a FlixBus, BlaBlaCar,
+Eurolines, Ouibus or Alsa network, operator or brand; night buses stay. Trains are regional and
+commuter lines only — network TER, RER or Transilien, or a regional, commuter or suburban service —
+never a TGV, Ouigo, Intercités or ICE, nor a `long_distance`, `high_speed`, `night`, `national` or
+`international` service. A metro, tram or train stop mapped twice — `Guillotière`
 and `Guillotière - Gabriel Péri` — counts once when the points are within 150 m and one name is the
 start of the other; it keeps the shorter name. Metro and tram stations and train stations are named
 when there are eight or fewer. The Overpass servers are often busy: three public endpoints are tried

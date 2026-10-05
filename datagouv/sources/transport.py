@@ -37,6 +37,7 @@ ROUTE_MODES = {
 REGIONAL_TRAIN_SERVICES = {"regional", "commuter", "suburban"}
 REGIONAL_TRAIN_NETWORKS = re.compile(r"\b(TER|RER|Transilien)\b")
 LONG_DISTANCE_SERVICES = {"long_distance", "high_speed", "night", "national", "international"}
+COACH_SERVICES = {"long_distance", "international"}
 LONG_DISTANCE_BRANDS = re.compile(
     r"\b(IC|ICE|ICN|TGV|Ouigo|Intercit[ée]s|InterCityExpress|Lyria|Eurostar|Thalys)\b", re.IGNORECASE
 )
@@ -274,17 +275,20 @@ def _keep(names: dict, key: str, name: str) -> None:
 def route_mode(tags: dict):
     """The mode of a route relation, or ``None`` for a long-distance train or coach, or another route.
 
-    A bus is a long-distance coach when its service is long-distance or its
-    network, operator or brand names a coach company (FlixBus, BlaBlaCar Bus...).
+    A bus or trolleybus is a long-distance coach when its service is
+    ``long_distance`` or ``international``, or its network, operator or brand
+    names a coach company (FlixBus, BlaBlaCar Bus...); a night or national bus
+    stays a bus.
 
     A train is regional when its network is TER, RER or Transilien, or its service
-    is regional, commuter or suburban - unless its service is long-distance or its
-    ref, name, network or brand names a long-distance product (TGV, Intercités, ICE...).
+    is regional, commuter or suburban - unless its service is ``long_distance``,
+    ``high_speed``, ``night``, ``national`` or ``international``, or its ref, name,
+    network or brand names a long-distance product (TGV, Intercités, ICE...).
     """
     mode = ROUTE_MODES.get(tags.get("route"))
     if mode == "bus":
         companies = " ".join(tags.get(key) or "" for key in ("network", "operator", "brand"))
-        if tags.get("service") in LONG_DISTANCE_SERVICES or LONG_DISTANCE_COACHES.search(companies):
+        if tags.get("service") in COACH_SERVICES or LONG_DISTANCE_COACHES.search(companies):
             return None
     if mode != "train":
         return mode
