@@ -124,7 +124,9 @@ distinct by name. A line is the route master that groups its directions when Ope
 otherwise its ref; refs and names compare without accents, case, punctuation or leading zeros, and a
 ref `a;b` counts as two lines. Light rail counts as tram, trolleybus as bus. Trains are regional and
 commuter lines only — network TER, RER or Transilien, or a regional, commuter or suburban service —
-never a TGV, Ouigo, Intercités, ICE or any long-distance, night or high-speed service. Metro and tram
+never a TGV, Ouigo, Intercités, ICE or any long-distance, night or high-speed service. A metro, tram
+or train stop mapped twice — `Guillotière` and `Guillotière - Gabriel Péri` — counts once when the
+points are within 150 m and one name is the start of the other; it keeps the shorter name. Metro and tram
 stations and train stations are named when there are eight or fewer. The Overpass servers are often
 busy: three public endpoints are tried in turn, and the cells show an error when all of them fail.
 

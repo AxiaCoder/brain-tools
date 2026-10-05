@@ -1582,3 +1582,86 @@ def test_transport_query_takes_station_ways_and_route_masters(fake_net):
                      'nwr(area.a)["railway"~"^(station|halt)$"]', "rel(bw.s)", "rel(bw.p)",
                      'rel(br.r)["type"="route_master"]'):
         assert selector in params["data"]
+
+
+# --- transport: one place under two names -----------------------------------
+
+GUILLOTIERE = (45.7553566, 4.8428297)
+
+
+def _at(point, east_metres=0.0, **tags):
+    lat, lon = point
+    return {"type": "node", "id": 1, "lat": lat, "lon": lon + east_metres / 77_800, "tags": tags}
+
+
+def _way_at(point, **tags):
+    return {"type": "way", "id": 2, "center": {"lat": point[0], "lon": point[1]}, "tags": tags}
+
+
+def test_close_stops_whose_names_share_leading_words_merge_to_the_shortest():
+    modes = transport.summarize([
+        _way_at(GUILLOTIERE, railway="station", station="subway", name="Guillotière"),
+        _at(GUILLOTIERE, 30, railway="station", station="subway", name="Guillotière - Gabriel Péri"),
+        _at(GUILLOTIERE, 600, railway="station", station="subway", name="Saxe - Gambetta"),
+        _at((48.8424, 2.3659), railway="station", name="Paris Austerlitz"),
+        _at((48.8424, 2.3659), 80, railway="station", network="RER", name="Paris Austerlitz RER"),
+    ])
+    assert modes["subway"]["stops"] == ["Guillotière", "Saxe - Gambetta"]
+    assert modes["train"]["stops"] == ["Paris Austerlitz"]
+
+
+def test_name_prefix_far_apart_does_not_merge():
+    modes = transport.summarize([
+        _at(GUILLOTIERE, railway="tram_stop", name="Guillotière"),
+        _at(GUILLOTIERE, 151, railway="tram_stop", name="Guillotière - Gabriel Péri"),
+    ])
+    assert modes["tram"]["stops"] == ["Guillotière", "Guillotière - Gabriel Péri"]
+
+
+def test_close_stops_without_a_name_prefix_do_not_merge():
+    modes = transport.summarize([
+        _at(GUILLOTIERE, railway="station", station="subway", name="Gambetta"),
+        _at(GUILLOTIERE, 10, railway="station", station="subway", name="Saxe - Gambetta"),
+        _at(GUILLOTIERE, 20, railway="station", station="subway", name="Guillotièreville"),
+        _at(GUILLOTIERE, 25, railway="station", station="subway", name="Guillotière"),
+    ])
+    assert modes["subway"]["stops"] == ["Gambetta", "Guillotière", "Guillotièreville", "Saxe - Gambetta"]
+
+
+def test_stop_without_coordinates_merges_only_on_the_same_name():
+    modes = transport.summarize([
+        _node(railway="station", station="subway", name="Guillotière"),
+        _at(GUILLOTIERE, railway="station", station="subway", name="Guillotière - Gabriel Péri"),
+        _node(railway="station", station="subway", name="Garibaldi"),
+        _at(GUILLOTIERE, 900, railway="station", station="subway", name="Garibaldi"),
+    ])
+    assert modes["subway"]["stops"] == ["Garibaldi", "Guillotière", "Guillotière - Gabriel Péri"]
+
+
+def test_merge_is_transitive():
+    modes = transport.summarize([
+        _at((48.8424, 2.3659), railway="station", name="Paris Austerlitz"),
+        _at((48.8424, 2.3659), 100, railway="station", name="Paris Austerlitz RER"),
+        _at((48.8424, 2.3659), 200, railway="station", name="Paris Austerlitz RER C"),
+    ])
+    assert modes["train"]["stops"] == ["Paris Austerlitz"]
+
+
+def test_bus_stops_are_not_merged_by_proximity():
+    modes = transport.summarize([
+        _at(GUILLOTIERE, highway="bus_stop", name="Guillotière"),
+        _at(GUILLOTIERE, 10, highway="bus_stop", name="Guillotière - Gabriel Péri"),
+    ])
+    assert modes["bus"]["stops"] == ["Guillotière", "Guillotière - Gabriel Péri"]
+
+
+def test_distance_metres_is_haversine():
+    assert transport.distance_metres((48.8424, 2.3659), (48.8424, 2.3659)) == 0
+    assert 110_000 < transport.distance_metres((45.0, 4.8), (46.0, 4.8)) < 112_000
+
+
+def test_transport_query_asks_stop_coordinates(fake_net):
+    fake = fake_net([(transport.ENDPOINTS[0], lambda u, p: OVERPASS)])
+    transport.fetch("69383")
+    [(_, params)] = fake.calls
+    assert ".s out tags center;" in params["data"]

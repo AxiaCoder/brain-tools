@@ -1,5 +1,6 @@
 """Public transport serving a town, from OpenStreetMap through the Overpass API."""
 
+import math
 import re
 import time
 
@@ -22,6 +23,9 @@ SERVER_TIMEOUT_SECONDS = 50
 HTTP_TIMEOUT_SECONDS = 60
 RETRY_PAUSE_SECONDS = 10
 MODES = ("subway", "tram", "bus", "train")
+MERGED_STOP_MODES = ("subway", "tram", "train")
+MERGE_DISTANCE_METRES = 150
+EARTH_RADIUS_METRES = 6_371_000
 ROUTE_MODES = {
     "subway": "subway",
     "tram": "tram",
@@ -47,7 +51,7 @@ area["ref:INSEE"="{code}"]["boundary"="administrative"]->.a;
   node(area.a)["highway"="bus_stop"];
   nwr(area.a)["railway"~"^(station|halt)$"];
 )->.s;
-.s out tags;
+.s out tags center;
 nwr(area.a)["public_transport"~"^(stop_position|platform)$"]->.p;
 (
   rel(bn.s){routes};
@@ -127,9 +131,10 @@ def summarize(elements: list[dict]) -> dict:
 
     A route that belongs to a ``route_master`` is the line of that master, so its
     directions and variants count once; see ``line_names``. A multi-valued ref
-    ``a;b`` is several lines. Lines and stops are distinct on a
-    folded form - leading zeros, case, accents, punctuation and spacing aside - and
-    each keeps its alphabetically first spelling.
+    ``a;b`` is several lines. Lines and stops are distinct on a folded form -
+    leading zeros, case, accents, punctuation and spacing aside - and each keeps
+    its alphabetically first spelling. Metro, tram and train stops are further
+    merged by ``merge_stops``.
     """
     masters = {}
     for element in elements:
@@ -138,6 +143,7 @@ def summarize(elements: list[dict]) -> dict:
                 masters[member.get("ref")] = element["tags"]
     lines = {mode: {} for mode in MODES}
     stops = {mode: {} for mode in MODES}
+    places = {mode: {} for mode in MODES}
     for element in elements:
         tags = element.get("tags") or {}
         if tags.get("type") == "route_master":
@@ -150,7 +156,13 @@ def summarize(elements: list[dict]) -> dict:
         else:
             mode = stop_mode(tags)
             if mode and tags.get("name"):
-                _keep(stops[mode], normalize(tags["name"]), tags["name"])
+                key = normalize(tags["name"])
+                _keep(stops[mode], key, tags["name"])
+                point = _coordinates(element)
+                if point:
+                    places[mode].setdefault(key, []).append(point)
+    for mode in MERGED_STOP_MODES:
+        stops[mode] = merge_stops(stops[mode], places[mode])
     return {
         mode: {
             "lines": sorted(lines[mode].values(), key=natural_key),
@@ -158,6 +170,61 @@ def summarize(elements: list[dict]) -> dict:
         }
         for mode in MODES
     }
+
+
+def merge_stops(names: dict, places: dict) -> dict:
+    """Merge stops that are one place under two names; return ``{key: name}`` again.
+
+    ``names`` maps a folded name to its spelling, ``places`` a folded name to its
+    ``(lat, lon)`` points. Two stops merge when one folded name is the other's
+    leading words and two of their points lie within ``MERGE_DISTANCE_METRES``;
+    merging is transitive and the group keeps its shortest spelling. A stop
+    without coordinates merges with none.
+    """
+    keys = list(names)
+    parent = {key: key for key in keys}
+
+    def root(key):
+        while parent[key] != key:
+            parent[key] = parent[parent[key]]
+            key = parent[key]
+        return key
+
+    for index, first in enumerate(keys):
+        for second in keys[index + 1:]:
+            if _word_prefix(first, second) and any(
+                distance_metres(a, b) <= MERGE_DISTANCE_METRES
+                for a in places.get(first, ())
+                for b in places.get(second, ())
+            ):
+                parent[root(first)] = root(second)
+    merged = {}
+    for key in keys:
+        group = root(key)
+        if group not in merged or (len(names[key]), names[key]) < (len(merged[group]), merged[group]):
+            merged[group] = names[key]
+    return merged
+
+
+def _word_prefix(first: str, second: str) -> bool:
+    """Whether one folded name is the leading words of the other."""
+    short, long = sorted((first.split(), second.split()), key=len)
+    return long[: len(short)] == short
+
+
+def distance_metres(a: tuple, b: tuple) -> float:
+    """Great-circle (haversine) distance in metres between two ``(lat, lon)`` points in degrees."""
+    lat1, lon1, lat2, lon2 = map(math.radians, (*a, *b))
+    h = math.sin((lat2 - lat1) / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2
+    return 2 * EARTH_RADIUS_METRES * math.asin(math.sqrt(h))
+
+
+def _coordinates(element: dict):
+    """``(lat, lon)`` of a node, or of the center of a way or relation; ``None`` when absent."""
+    point = element if "lat" in element else element.get("center") or {}
+    if "lat" in point and "lon" in point:
+        return (point["lat"], point["lon"])
+    return None
 
 
 def line_names(route: dict, master: dict) -> list[str]:
