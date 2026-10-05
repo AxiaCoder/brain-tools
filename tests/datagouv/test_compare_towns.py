@@ -275,3 +275,346 @@ def test_main_unresolved_town_exits_2(fake_net, capsys):
     fake_net(_all_routes())
     assert compare_towns.main(["Lyon"]) == 2
     assert "use an INSEE code" in capsys.readouterr().err
+
+
+# --- resolution edges -------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "query, official",
+    [
+        ("saint etienne", "Saint-Étienne"),
+        ("SAINT-ÉTIENNE", "Saint-Étienne"),
+        ("l isle sur la sorgue", "L'Isle-sur-la-Sorgue"),
+        ("Marseille 1er", "Marseille 1er Arrondissement"),
+        ("Paris 20e arrondissement", "Paris 20e Arrondissement"),
+    ],
+)
+def test_normalize_matches_official_name(query, official):
+    assert towns.normalize(query) == towns.normalize(official)
+
+
+def test_normalize_keeps_arrondissement_when_not_trailing():
+    assert towns.normalize("Arrondissement de Lyon") == "arrondissement de lyon"
+
+
+def test_normalize_does_not_confuse_1er_and_10e():
+    assert towns.normalize("Paris 1er") != towns.normalize("Paris 10e Arrondissement")
+
+
+def test_resolve_picks_accented_town_among_prefix_matches(fake_net):
+    candidates = [
+        {"code": "42218", "nom": "Saint-Étienne"},
+        {"code": "42207", "nom": "Saint-Étienne-de-Saint-Geoirs"},
+    ]
+    fake_net([(towns.GEO_API, lambda u, p: candidates)])
+    assert towns.resolve("saint etienne") == Town("42218", "Saint-Étienne")
+
+
+def test_resolve_sends_name_search_params(fake_net):
+    fake = fake_net([(towns.GEO_API, lambda u, p: [{"code": "63113", "nom": "Clermont-Ferrand"}])])
+    towns.resolve("  Clermont-Ferrand  ")
+    url, params = fake.calls[0]
+    assert url == towns.GEO_API
+    assert params["nom"] == "Clermont-Ferrand"
+    assert params["type"] == "commune-actuelle,arrondissement-municipal"
+
+
+def test_resolve_null_body_is_not_found(fake_net):
+    fake_net([(towns.GEO_API, lambda u, p: None)])
+    with pytest.raises(TownResolutionError, match="no town"):
+        towns.resolve("Nowhere")
+
+
+def test_resolve_corsican_code_is_uppercased(fake_net):
+    fake = fake_net([(towns.GEO_API, lambda u, p: {"nom": "Ajaccio", "code": "2A004"})])
+    assert towns.resolve(" 2a004 ") == Town("2A004", "Ajaccio")
+    assert fake.calls[0][0] == f"{towns.GEO_API}/2A004"
+
+
+@pytest.mark.parametrize("query", ["6911", "691234", "2C004"])
+def test_resolve_non_code_digits_go_to_name_search(fake_net, query):
+    fake = fake_net([(towns.GEO_API, lambda u, p: [])])
+    with pytest.raises(TownResolutionError, match="no town"):
+        towns.resolve(query)
+    assert fake.calls[0][0] == towns.GEO_API
+
+
+def test_resolve_code_server_error_propagates(fake_net):
+    def answer(url, params):
+        response = requests.Response()
+        response.status_code = 500
+        return requests.HTTPError("500", response=response)
+
+    fake_net([(towns.GEO_API, answer)])
+    with pytest.raises(requests.HTTPError):
+        towns.resolve("63113")
+
+
+def test_resolve_code_without_name_falls_through_to_arrondissement(fake_net):
+    def answer(url, params):
+        if params.get("type") == "arrondissement-municipal":
+            return {"nom": "Paris 1er Arrondissement", "code": "75101"}
+        return {}
+
+    fake_net([(towns.GEO_API, answer)])
+    assert towns.resolve("75101") == Town("75101", "Paris 1er Arrondissement")
+
+
+@pytest.mark.parametrize(
+    "code",
+    ["75100", "75121", "75056", "69380", "69390", "13200", "13217", "13055", "2B033", ""],
+)
+def test_parent_commune_outside_ranges_is_none(code):
+    assert towns.parent_commune(code) is None
+
+
+def test_town_parent_property():
+    assert Town("13208", "Marseille 8e Arrondissement").parent == ("13055", "Marseille")
+    assert Town("13055", "Marseille").parent is None
+
+
+# --- source edges -----------------------------------------------------------
+
+
+def test_rents_missing_numbers_stay_none():
+    row = {"loypredm2": None, "lwr.IPm2": None, "upr.IPm2": None, "TYPPRED": "maille"}
+    assert rents.parse_row(row) == {
+        "rent_m2": None,
+        "low_m2": None,
+        "high_m2": None,
+        "estimated_on": "maille",
+        "observations": None,
+    }
+
+
+def test_rents_null_body_means_no_data(fake_net):
+    fake_net([("https://tabular-api.data.gouv.fr", lambda u, p: None)])
+    assert set(rents.fetch("69383")["segments"].values()) == {None}
+
+
+def test_risks_attach_deep_subtype_to_shortest_prefix():
+    details = [
+        {"num_risque": "11", "libelle_risque_long": "Inondation"},
+        {"num_risque": "112", "libelle_risque_long": "Crue lente"},
+        {"num_risque": "1121", "libelle_risque_long": "Deep"},
+    ]
+    assert risks.group(details) == [{"risk": "Inondation", "subtypes": ["Crue lente", "Deep"]}]
+
+
+def test_risks_subtype_listed_before_its_parent():
+    details = [
+        {"num_risque": "112", "libelle_risque_long": "Crue lente"},
+        {"num_risque": "11", "libelle_risque_long": "Inondation"},
+    ]
+    assert risks.group(details) == [{"risk": "Inondation", "subtypes": ["Crue lente"]}]
+
+
+def test_risks_sibling_numbers_are_not_prefixes():
+    details = [
+        {"num_risque": "12", "libelle_risque_long": "Mouvement de terrain"},
+        {"num_risque": "13", "libelle_risque_long": "Séisme"},
+        {"num_risque": "123", "libelle_risque_long": "Sous 12"},
+    ]
+    assert risks.group(details) == [
+        {"risk": "Mouvement de terrain", "subtypes": ["Sous 12"]},
+        {"risk": "Séisme", "subtypes": []},
+    ]
+
+
+def test_risks_entry_without_number_or_label():
+    details = [{"libelle_risque_long": "Radon"}, {"num_risque": 18}]
+    assert risks.group(details) == [
+        {"risk": "Radon", "subtypes": []},
+        {"risk": "18", "subtypes": []},
+    ]
+
+
+def test_risks_merge_details_of_every_data_entry(fake_net):
+    body = {
+        "data": [
+            {"risques_detail": [{"num_risque": "11", "libelle_risque_long": "Inondation"}]},
+            {"risques_detail": None},
+            {"risques_detail": [{"num_risque": "112", "libelle_risque_long": "Crue lente"}]},
+        ]
+    }
+    fake_net([(risks.GASPAR_API, lambda u, p: body)])
+    assert risks.fetch("13055")["risks"] == [{"risk": "Inondation", "subtypes": ["Crue lente"]}]
+
+
+def test_water_sorts_samples_and_keeps_the_limit():
+    rows = [_row(f"S{d}", f"2026-07-{d:02d}T08:00:00Z") for d in (3, 12, 7, 1, 12)]
+    samples = water.latest_samples(rows, 3)
+    assert [s["code_prelevement"] for s in samples] == ["S12", "S7", "S3"]
+
+
+def test_water_row_without_sample_code_groups_by_date():
+    rows = [
+        _row(None, "2026-07-01T08:00:00Z"),
+        _row(None, "2026-07-01T08:00:00Z"),
+        _row(None, "2026-07-02T08:00:00Z"),
+    ]
+    assert len(water.latest_samples(rows, 10)) == 2
+
+
+def test_water_keeps_at_most_ten_samples(fake_net):
+    rows = [_row(f"S{d}", f"2026-07-{d:02d}T08:00:00Z") for d in range(1, 16)]
+    fake = fake_net([(water.HUBEAU_API, lambda u, p: {"data": rows})])
+    result = water.fetch("63113")
+    assert result["samples"] == 10
+    assert result["last_sample_date"] == "2026-07-15"
+    assert fake.calls[0][1]["code_commune"] == "63113"
+
+
+def test_water_tally_unknown_and_missing_verdicts():
+    samples = [{"f": "D"}, {"f": "X"}, {"f": None}, {}]
+    assert water.tally(samples, "f") == {"derogation": 1, "unknown": 3}
+
+
+# --- orchestration edges ----------------------------------------------------
+
+
+def test_commune_queries_every_source_with_its_own_code(fake_net):
+    clermont = [{"code": "63113", "nom": "Clermont-Ferrand"}]
+    fake = fake_net([(towns.GEO_API, lambda u, p: clermont), *_all_routes()[1:]])
+    [town] = compare_towns.compare(["Clermont-Ferrand"])
+    queried = {url: params for url, params in fake.calls}
+    assert queried[risks.GASPAR_API]["code_insee"] == "63113"
+    assert queried[water.HUBEAU_API]["code_commune"] == "63113"
+    assert all("scope" not in result for result in town["sources"].values())
+    assert "as a whole" not in compare_towns.render_text([town])
+
+
+def test_parsing_failure_is_isolated_and_keeps_scope(fake_net):
+    routes = _all_routes()
+    routes[2] = (risks.GASPAR_API, lambda u, p: {"data": "not a list"})
+    fake_net(routes)
+    [town] = compare_towns.compare(["Lyon 3e"])
+    assert town["sources"]["risks"]["error_type"] == "AttributeError"
+    assert town["sources"]["risks"]["scope"] == {"code": "69123", "name": "Lyon"}
+    assert town["sources"]["water"]["samples"] == 3
+    assert "segments" in town["sources"]["rents"]
+
+
+def test_every_source_failing_still_renders(fake_net):
+    fake_net(
+        [
+            (towns.GEO_API, lambda u, p: LYON_ARRONDISSEMENTS),
+            ("https://", lambda u, p: requests.Timeout("slow")),
+        ]
+    )
+    [town] = compare_towns.compare(["Lyon 3e"])
+    assert {r["error_type"] for r in town["sources"].values()} == {"Timeout"}
+    text = compare_towns.render_text([town])
+    assert text.count("error (Timeout)") == len(compare_towns.RENT_SEGMENTS) + 4
+
+
+def test_one_unresolved_town_stops_before_any_source_call(fake_net):
+    fake = fake_net(_all_routes())
+    with pytest.raises(TownResolutionError):
+        compare_towns.compare(["Lyon 3e", "Lyon"])
+    assert all(url == towns.GEO_API for url, _ in fake.calls)
+
+
+def test_render_empty_results_and_verdict_labels():
+    report = [
+        {
+            "name": "Nowhere",
+            "code": "00000",
+            "sources": {
+                "rents": {"segments": {"apartment": None, "house": {"rent_m2": None}}},
+                "risks": {"risks": []},
+                "water": {"samples": 0, "last_sample_date": None},
+            },
+        },
+        {
+            "name": "Somewhere",
+            "code": "11111",
+            "sources": {
+                "rents": {
+                    "segments": {
+                        "apartment": {
+                            "rent_m2": 9.5,
+                            "low_m2": 7.0,
+                            "high_m2": 12.25,
+                            "estimated_on": "maille",
+                            "observations": 12,
+                        }
+                    }
+                },
+                "risks": {"risks": [{"risk": "Inondation", "subtypes": ["a", "b"]}]},
+                "water": {
+                    "samples": 4,
+                    "last_sample_date": "2026-07-20",
+                    "bacteriological": {"compliant": 2, "non_compliant": 1, "not_applicable": 1},
+                    "physico_chemical": {"derogation": 4},
+                },
+            },
+        },
+    ]
+    text = compare_towns.render_text(report)
+    assert "no data" in text
+    assert "none listed" in text
+    assert "no sample" in text
+    assert "9.50 (7.00-12.25)" in text
+    assert "n=12, maille" in text
+    assert "Inondation (+2)" in text
+    water_result = report[1]["sources"]["water"]
+    assert compare_towns._water_cell(water_result, "bacteriological") == [
+        "2/4 compliant, 1 NON-compliant, 1 n/a"
+    ]
+    assert "0/4 compliant, 4 derogation" in text
+
+
+def test_render_commune_estimate_has_no_level_suffix():
+    cell = compare_towns._rent_cell({"segments": {"apartment": rents.parse_row(RENT_ROW)}}, "apartment")
+    assert cell == ["18.87 (14.58-24.43)", "n=19582"]
+
+
+def test_main_text_output_has_one_column_per_town(fake_net, capsys):
+    def geo(url, params):
+        if params.get("nom", "").startswith("Lyon"):
+            return LYON_ARRONDISSEMENTS
+        return [{"code": "63113", "nom": "Clermont-Ferrand"}]
+
+    fake_net([(towns.GEO_API, geo), *_all_routes()[1:]])
+    assert compare_towns.main(["Lyon 3e", "Clermont-Ferrand"]) == 0
+    out = capsys.readouterr().out
+    town_line = next(line for line in out.splitlines() if line.startswith("Town"))
+    assert "Lyon 3e Arrondissement" in town_line and "Clermont-Ferrand" in town_line
+
+
+# --- network entry point ----------------------------------------------------
+
+
+class _FakeResponse:
+    def __init__(self, status, body):
+        self.status_code = status
+        self.body = body
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(str(self.status_code), response=self)
+
+    def json(self):
+        return self.body
+
+
+def test_get_json_sends_params_timeout_and_user_agent(monkeypatch):
+    seen = {}
+
+    def fake_get(url, params=None, timeout=None, headers=None):
+        seen.update(url=url, params=params, timeout=timeout, headers=headers)
+        return _FakeResponse(200, {"ok": True})
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    assert net.get_json("https://x.test/a", {"q": 1}) == {"ok": True}
+    assert seen["params"] == {"q": 1}
+    assert seen["timeout"] == net.TIMEOUT_SECONDS
+    assert seen["headers"]["User-Agent"] == net.USER_AGENT
+
+
+def test_get_json_raises_on_http_error(monkeypatch):
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResponse(404, None))
+    with pytest.raises(requests.HTTPError):
+        net.get_json("https://x.test/missing")
