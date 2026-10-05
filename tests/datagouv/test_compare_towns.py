@@ -955,3 +955,113 @@ def test_fibre_for_arrondissement_uses_parent_commune(fake_net):
         "98.9% (381720/385933)",
         "2026 T2",
     ]
+
+
+def test_crime_masked_row_drops_its_published_figures(crime_net):
+    crime_net(lines=[
+        CRIME_HEADER,
+        _crime_line("13074", 2025, "Vols avec armes", '"7"', '"1,3"', "ndiff", '"4,5692308";"1,1234425"'),
+    ])
+    armed = crime.fetch("13074")["indicators"]["armed_robbery"]
+    assert (armed["masked"], armed["count"], armed["rate_per_mille"]) == (True, None, None)
+
+
+def test_crime_change_is_none_when_latest_year_masked(crime_net):
+    crime_net(lines=[
+        CRIME_HEADER,
+        _crime_line("13074", 2025, "Vols avec armes", "NA", "NA", "ndiff"),
+        _crime_line("13074", 2020, "Vols avec armes", '"3"', '"0,6"'),
+    ])
+    assert crime.fetch("13074")["indicators"]["armed_robbery"]["rate_change_points"] is None
+
+
+def test_crime_change_is_none_when_base_year_absent(crime_net):
+    crime_net(lines=[CRIME_HEADER, _crime_line("13074", 2025, "Vols avec armes", '"3"', '"0,6"')])
+    assert crime.fetch("13074")["indicators"]["armed_robbery"]["rate_change_points"] is None
+
+
+def test_crime_unreadable_index_is_rebuilt(crime_net, crime_cache):
+    state = crime_net()
+    crime_cache.mkdir(parents=True)
+    (crime_cache / crime.INDEX_FILE).write_bytes(b"not a sqlite database")
+    assert crime.fetch("13074")["indicators"]["burglary"]["count"] == 6
+    assert state["downloads"] == [CRIME_URL]
+
+
+def test_crime_file_without_retained_indicator_raises_and_leaves_nothing(crime_net, crime_cache):
+    crime_net(lines=[CRIME_HEADER, _crime_line("13074", 2025, "Vols de véhicule", '"3"', '"0,5"')])
+    with pytest.raises(ValueError):
+        crime.fetch("13074")
+    assert list(crime_cache.iterdir()) == []
+
+
+class _FakeStream(_FakeResponse):
+    def __init__(self, status, chunks):
+        super().__init__(status, None)
+        self.chunks = chunks
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def iter_content(self, chunk_size):
+        return iter(self.chunks)
+
+
+def test_download_streams_body_with_timeout_and_user_agent(monkeypatch, tmp_path):
+    seen = {}
+
+    def fake_get(url, **kwargs):
+        seen.update(kwargs, url=url)
+        return _FakeStream(200, [b"ab", b"cd"])
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    target = tmp_path / "out.bin"
+    target.write_bytes(b"previous content, longer")
+    net.download("https://x.test/f.gz", str(target), timeout=7)
+    assert target.read_bytes() == b"abcd"
+    assert (seen["url"], seen["stream"], seen["timeout"]) == ("https://x.test/f.gz", True, 7)
+    assert seen["headers"]["User-Agent"] == net.USER_AGENT
+
+
+def test_download_raises_on_http_error_before_writing(monkeypatch, tmp_path):
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeStream(503, [b"x"]))
+    target = tmp_path / "out.bin"
+    with pytest.raises(requests.HTTPError):
+        net.download("https://x.test/f.gz", str(target))
+    assert not target.exists()
+
+
+def test_fibre_missing_ftth_count_has_no_share(fake_net):
+    fake_net([(fibre.TABULAR_API, lambda u, p: {"data": [dict(FIBRE_ROW, locaux_ftth=None)]})])
+    result = fibre.fetch("69123")
+    assert result["ftth_share"] is None and result["premises"] == 385933
+
+
+def test_render_fibre_cell_without_data_and_crime_header_without_year():
+    assert compare_towns._fibre_cell({"ftth_share": None}) == ["no data"]
+    assert compare_towns._crime_header([{"sources": {"crime": {"error": "x", "error_type": "Timeout"}}}]) == [
+        "Crime: recorded offences (Ministère de l'Intérieur)."
+    ]
+
+
+def test_crime_catalog_skips_non_main_resources(crime_net):
+    doc = {"type": "documentation", "format": "csv.gz", "title": "COM - notice", "url": "https://x/doc.csv.gz"}
+    catalog = _catalog()
+    catalog["resources"].insert(0, doc)
+    crime_net(catalog=catalog)
+    assert crime.fetch("13074")["file"] == CRIME_URL
+
+
+def test_render_text_states_crime_years(crime_net):
+    crime_net()
+    town = {"query": "x", "code": "13074", "name": "Peyrolles", "sources": {
+        "rents": {"segments": {}}, "risks": {"risks": []},
+        "water": {"samples": 0, "last_sample_date": None},
+        "crime": crime.fetch("13074"), "fibre": {"ftth_share": None},
+    }}
+    text = compare_towns.render_text([town])
+    assert "offences recorded in 2025" in text and "since 2020" in text
+    assert "6 · 2.48‰ (+0.78 pts)" in text
