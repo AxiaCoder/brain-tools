@@ -318,7 +318,7 @@ def test_resolve_code_that_is_insee_and_postal_of_the_same_commune(fake_net):
 def test_resolve_insee_code_without_postal_homonym_queries_postal_codes(fake_net):
     fake = fake_net([(towns.GEO_API, _by_code(lambda u, p: {"nom": "Clermont-Ferrand", "code": "63113"}))])
     assert towns.resolve("63113") == Town("63113", "Clermont-Ferrand")
-    assert (towns.GEO_API, {"codePostal": "63113", "fields": "nom,code"}) in fake.calls
+    assert (towns.GEO_API, {"codePostal": "63113", "type": towns.TOWN_TYPES, "fields": "nom,code"}) in fake.calls
 
 
 def test_resolve_postal_code_only_suggests_the_communes(fake_net):
@@ -329,6 +329,14 @@ def test_resolve_postal_code_only_suggests_the_communes(fake_net):
     message = str(raised.value)
     assert "04000 is not an INSEE code" in message
     assert "postal code 04000 = Digne-les-Bains (INSEE code 04070), Entrages (INSEE code 04074)" in message
+    assert "use one of those INSEE codes" in message
+
+
+def test_resolve_postal_code_of_a_single_commune_suggests_that_code(fake_net):
+    aix = [{"nom": "Aix-en-Provence", "code": "13001"}]
+    fake_net([(towns.GEO_API, _by_code(lambda u, p: _http_404(), aix))])
+    with pytest.raises(TownResolutionError, match="use that INSEE code or the town name"):
+        towns.resolve("13080")
 
 
 def test_main_reports_code_warning_on_stderr_json_and_table(fake_net, capsys):

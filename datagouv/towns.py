@@ -83,8 +83,9 @@ def _resolve_code(code: str) -> Town:
         if not postal:
             raise TownResolutionError(f"no commune or arrondissement with INSEE code {code}")
         listed = ", ".join(f"{c['nom']} (INSEE code {c['code']})" for c in postal)
+        advice = "use that INSEE code" if len(postal) == 1 else "use one of those INSEE codes"
         raise TownResolutionError(
-            f"{code} is not an INSEE code; postal code {code} = {listed} - use that INSEE code or the town name"
+            f"{code} is not an INSEE code; postal code {code} = {listed} - {advice} or the town name"
         )
     if not postal:
         return town
@@ -108,10 +109,10 @@ def _lookup_insee_code(code: str) -> Optional[Town]:
 
 
 def _communes_with_postal_code(code: str) -> list[dict]:
-    """Communes (``code``, ``nom``) whose postal code is ``code``; empty for a Corsican code."""
+    """Communes and arrondissements (``code``, ``nom``) whose postal code is ``code``; empty for a Corsican code."""
     if not code.isdigit():
         return []
-    return net.get_json(GEO_API, {"codePostal": code, "fields": "nom,code"}) or []
+    return net.get_json(GEO_API, {"codePostal": code, "type": TOWN_TYPES, "fields": "nom,code"}) or []
 
 
 def _resolve_name(name: str) -> Town:
