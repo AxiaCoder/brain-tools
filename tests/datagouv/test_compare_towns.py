@@ -1352,3 +1352,96 @@ def test_transport_gives_up_after_the_second_pass(fake_net, overpass_pauses):
     retried = [url for url in transport.ENDPOINTS if url != slow]
     assert [url for url, _ in fake.calls] == [*transport.ENDPOINTS, *retried]
     assert overpass_pauses == [transport.RETRY_PAUSE_SECONDS]
+
+
+def test_post_json_raises_on_http_error(monkeypatch):
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _FakeResponse(429, None))
+    with pytest.raises(requests.HTTPError):
+        net.post_json("https://x.test/busy", {"data": "q"})
+
+
+@pytest.mark.parametrize("tags, mode", [
+    ({"route": "train", "service": "regional"}, "train"),
+    ({"route": "train", "service": "commuter"}, "train"),
+    ({"route": "train", "service": "suburban"}, "train"),
+    ({"route": "train", "network": "TER Auvergne-Rhône-Alpes"}, "train"),
+    ({"route": "train", "network": "RER"}, "train"),
+    ({"route": "train", "network": "Transilien"}, "train"),
+    ({"route": "train", "service": "long_distance", "network": "Intercités"}, None),
+    ({"route": "train", "network": "TERRA"}, None),
+    ({"route": "train"}, None),
+    ({"route": "light_rail"}, "tram"),
+    ({"route": "trolleybus"}, "bus"),
+    ({"route": "ferry"}, None),
+    ({}, None),
+])
+def test_route_mode_keeps_regional_trains_and_groups_modes(tags, mode):
+    assert transport.route_mode(tags) == mode
+
+
+@pytest.mark.parametrize("tags, mode", [
+    ({"railway": "station", "station": "subway"}, "subway"),
+    ({"railway": "tram_stop"}, "tram"),
+    ({"railway": "station", "station": "light_rail"}, "tram"),
+    ({"railway": "station", "station": "tram"}, "tram"),
+    ({"highway": "bus_stop"}, "bus"),
+    ({"railway": "station"}, "train"),
+    ({"railway": "station", "station": "train"}, "train"),
+    ({"railway": "halt"}, "train"),
+    ({"railway": "station", "station": "funicular"}, None),
+    ({"railway": "stop"}, None),
+    ({}, None),
+])
+def test_stop_mode_classifies_stop_nodes(tags, mode):
+    assert transport.stop_mode(tags) == mode
+
+
+def test_natural_key_orders_digit_runs_as_numbers():
+    assert sorted(["T10", "T2", "B", "10", "2", "C3"], key=transport.natural_key) == [
+        "2", "10", "B", "C3", "T2", "T10"
+    ]
+
+
+def test_transport_harmless_remark_is_accepted(fake_net):
+    body = dict(OVERPASS, remark="runtime remark: Timeout is unused")
+    fake = fake_net([("https://", lambda u, p: body)])
+    assert transport.fetch("69383")["endpoint"] == transport.ENDPOINTS[0]
+    assert len(fake.calls) == 1
+
+
+def test_transport_non_json_body_falls_back(fake_net):
+    def answer(url, params):
+        if url == transport.ENDPOINTS[0]:
+            return ValueError("Expecting value: line 1 column 1 (char 0)")
+        return OVERPASS
+
+    fake = fake_net([("https://", answer)])
+    assert transport.fetch("69383")["endpoint"] == transport.ENDPOINTS[1]
+    assert len(fake.calls) == 2
+
+
+def test_transport_timeouts_only_are_not_retried(fake_net, overpass_pauses):
+    fake = fake_net([("https://", lambda u, p: requests.ReadTimeout("slow"))])
+    with pytest.raises(transport.OverpassError, match="ReadTimeout"):
+        transport.fetch("69383")
+    assert [url for url, _ in fake.calls] == transport.ENDPOINTS
+    assert overpass_pauses == []
+
+
+def test_render_transport_name_threshold_is_inclusive():
+    eight = [f"S{i}" for i in range(compare_towns.TRANSPORT_LISTED_NAMES)]
+    result = {"modes": {"train": {"lines": [], "stops": eight}, "bus": {"lines": ["1"], "stops": ["Gare"]}}}
+    assert compare_towns._transport_cell(result, "train") == ["0 lines", "8 stations: " + ", ".join(eight)]
+    assert compare_towns._transport_cell(result, "bus") == ["1 line", "1 stop"]
+
+
+def test_render_text_empty_transport_says_none():
+    text = compare_towns.render_text(_report_with({"indicators": {}}))
+    rows = [line for line in text.splitlines() if line.startswith("Transport, ")]
+    assert len(rows) == len(compare_towns.TRANSPORT_MODES)
+    assert all("none" in row for row in rows)
+
+
+def test_summarize_ignores_stops_with_an_empty_name():
+    modes = transport.summarize([_node(highway="bus_stop", name=""), _node(highway="bus_stop", name="Gare")])
+    assert modes["bus"]["stops"] == ["Gare"]
