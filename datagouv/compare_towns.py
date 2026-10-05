@@ -11,6 +11,8 @@ import json
 import sys
 import textwrap
 
+import requests
+
 from datagouv.sources import SOURCES, rents
 from datagouv.towns import Town, TownResolutionError, resolve
 
@@ -147,22 +149,29 @@ def _water_cell(result: dict, field) -> list[str]:
 
 
 def main(argv=None) -> int:
-    """CLI entry point; returns the process exit code (2 when a town does not resolve)."""
+    """CLI entry point; returns the process exit code.
+
+    2 when a town does not resolve, 3 when the town lookup service cannot be reached.
+    """
     parser = argparse.ArgumentParser(
         prog="python -m datagouv.compare_towns",
         description="Compare French towns on rents, risks and tap water (public open data).",
     )
-    parser.add_argument("towns", nargs="+", help="commune or arrondissement name, or INSEE code")
+    parser.add_argument("towns", nargs="+", help="commune or arrondissement name, or INSEE code, not postal code")
     parser.add_argument("--json", action="store_true", help="print JSON instead of a table")
     args = parser.parse_args(argv)
 
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
     try:
         report = compare(args.towns)
     except TownResolutionError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
+    except requests.RequestException as error:
+        print(f"error: town lookup failed ({type(error).__name__})", file=sys.stderr)
+        return 3
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:

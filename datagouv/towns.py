@@ -63,8 +63,9 @@ def normalize(name: str) -> str:
 def resolve(query: str) -> Town:
     """Resolve ``query`` - a name or a 5-character INSEE code - to a ``Town``.
 
-    Raises ``TownResolutionError`` when nothing matches, or when the name search
-    returns no exact match or several: the candidates are listed, none is picked.
+    Raises ``TownResolutionError`` when nothing matches, when the name search
+    returns no exact match or several, or when a numeric code is also the postal
+    code of another commune: the candidates are listed, none is picked.
     """
     query = query.strip()
     if INSEE_CODE.match(query):
@@ -73,7 +74,25 @@ def resolve(query: str) -> Town:
 
 
 def _resolve_code(code: str) -> Town:
-    """Look up an INSEE code among current communes, then municipal arrondissements."""
+    """Resolve an INSEE code, refusing it when it also reads as another commune's postal code."""
+    town = _lookup_insee_code(code)
+    postal = [c for c in _communes_with_postal_code(code) if town is None or c["code"] != town.code]
+    if not postal:
+        if town is None:
+            raise TownResolutionError(f"no commune or arrondissement with INSEE code {code}")
+        return town
+    postal_reading = f"postal code {code} = " + ", ".join(f"{c['nom']} (INSEE code {c['code']})" for c in postal)
+    if town is None:
+        raise TownResolutionError(
+            f"{code} is not an INSEE code; {postal_reading} - use that INSEE code or the town name"
+        )
+    raise TownResolutionError(
+        f"{code} is ambiguous: INSEE {code} = {town.name}; {postal_reading} - use the town name"
+    )
+
+
+def _lookup_insee_code(code: str) -> Optional[Town]:
+    """Look up an INSEE code among current communes, then municipal arrondissements; ``None`` if absent."""
     for params in ({"fields": "nom"}, {"fields": "nom", "type": "arrondissement-municipal"}):
         try:
             found = net.get_json(f"{GEO_API}/{code}", params)
@@ -83,7 +102,14 @@ def _resolve_code(code: str) -> Town:
             raise
         if found and found.get("nom"):
             return Town(code=found.get("code", code), name=found["nom"])
-    raise TownResolutionError(f"no commune or arrondissement with INSEE code {code}")
+    return None
+
+
+def _communes_with_postal_code(code: str) -> list[dict]:
+    """Communes (``code``, ``nom``) whose postal code is ``code``; empty for a Corsican code."""
+    if not code.isdigit():
+        return []
+    return net.get_json(GEO_API, {"codePostal": code, "fields": "nom,code"}) or []
 
 
 def _resolve_name(name: str) -> Town:

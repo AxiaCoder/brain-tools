@@ -96,6 +96,17 @@ def _http_404():
     return requests.HTTPError("404", response=response)
 
 
+def _by_code(insee_answer, postal=()):
+    """Route a code lookup: postal-code searches get ``postal``, the rest ``insee_answer``."""
+
+    def answer(url, params):
+        if "codePostal" in params:
+            return list(postal)
+        return insee_answer(url, params)
+
+    return answer
+
+
 # --- resolution -------------------------------------------------------------
 
 
@@ -131,7 +142,7 @@ def test_resolve_nothing_found(fake_net):
 
 
 def test_resolve_code_hits_the_commune_endpoint(fake_net):
-    fake = fake_net([(towns.GEO_API, lambda u, p: {"nom": "Clermont-Ferrand", "code": "63113"})])
+    fake = fake_net([(towns.GEO_API, _by_code(lambda u, p: {"nom": "Clermont-Ferrand", "code": "63113"}))])
     assert towns.resolve("63113") == Town("63113", "Clermont-Ferrand")
     assert fake.calls[0][0] == f"{towns.GEO_API}/63113"
 
@@ -142,12 +153,12 @@ def test_resolve_code_falls_back_to_arrondissement_type(fake_net):
             return {"nom": "Lyon 3e Arrondissement", "code": "69383"}
         return _http_404()
 
-    fake_net([(towns.GEO_API, answer)])
+    fake_net([(towns.GEO_API, _by_code(answer))])
     assert towns.resolve("69383").name == "Lyon 3e Arrondissement"
 
 
 def test_resolve_unknown_code(fake_net):
-    fake_net([(towns.GEO_API, lambda u, p: _http_404())])
+    fake_net([(towns.GEO_API, _by_code(lambda u, p: _http_404()))])
     with pytest.raises(TownResolutionError, match="99999"):
         towns.resolve("99999")
 
@@ -275,6 +286,55 @@ def test_main_unresolved_town_exits_2(fake_net, capsys):
     fake_net(_all_routes())
     assert compare_towns.main(["Lyon"]) == 2
     assert "use an INSEE code" in capsys.readouterr().err
+
+
+def test_resolve_insee_code_that_is_another_postal_code_is_ambiguous(fake_net):
+    lyon = [{"nom": "Lyon", "code": "69123"}]
+    fake_net([(towns.GEO_API, _by_code(lambda u, p: {"nom": "Albigny-sur-Saône", "code": "69003"}, lyon))])
+    with pytest.raises(TownResolutionError) as raised:
+        towns.resolve("69003")
+    message = str(raised.value)
+    assert "INSEE 69003 = Albigny-sur-Saône" in message
+    assert "postal code 69003 = Lyon (INSEE code 69123)" in message
+
+
+def test_resolve_code_that_is_insee_and_postal_of_the_same_commune(fake_net):
+    same = [{"nom": "Digne-les-Bains", "code": "04070"}]
+    fake_net([(towns.GEO_API, _by_code(lambda u, p: {"nom": "Digne-les-Bains", "code": "04070"}, same))])
+    assert towns.resolve("04070") == Town("04070", "Digne-les-Bains")
+
+
+def test_resolve_insee_code_without_postal_homonym_queries_postal_codes(fake_net):
+    fake = fake_net([(towns.GEO_API, _by_code(lambda u, p: {"nom": "Clermont-Ferrand", "code": "63113"}))])
+    assert towns.resolve("63113") == Town("63113", "Clermont-Ferrand")
+    assert (towns.GEO_API, {"codePostal": "63113", "fields": "nom,code"}) in fake.calls
+
+
+def test_resolve_postal_code_only_suggests_the_commune(fake_net):
+    aix = [{"nom": "Aix-en-Provence", "code": "13001"}]
+    fake_net([(towns.GEO_API, _by_code(lambda u, p: _http_404(), aix))])
+    with pytest.raises(TownResolutionError) as raised:
+        towns.resolve("13080")
+    message = str(raised.value)
+    assert "13080 is not an INSEE code" in message
+    assert "postal code 13080 = Aix-en-Provence (INSEE code 13001)" in message
+
+
+def test_main_town_lookup_unreachable_exits_3(fake_net, capsys):
+    fake_net([(towns.GEO_API, lambda u, p: requests.ConnectionError("geo down"))])
+    assert compare_towns.main(["Lyon 3e"]) == 3
+    assert capsys.readouterr().err.strip() == "error: town lookup failed (ConnectionError)"
+
+
+def test_main_town_lookup_server_error_exits_3(fake_net, capsys):
+    def answer(url, params):
+        response = requests.Response()
+        response.status_code = 503
+        return requests.HTTPError("503", response=response)
+
+    fake_net([(towns.GEO_API, answer)])
+    assert compare_towns.main(["63113"]) == 3
+    assert "town lookup failed (HTTPError)" in capsys.readouterr().err
 
 
 # --- resolution edges -------------------------------------------------------
