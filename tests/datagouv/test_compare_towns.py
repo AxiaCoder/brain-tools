@@ -288,20 +288,31 @@ def test_main_unresolved_town_exits_2(fake_net, capsys):
     assert "use an INSEE code" in capsys.readouterr().err
 
 
-def test_resolve_insee_code_that_is_another_postal_code_is_ambiguous(fake_net):
+def test_resolve_insee_code_that_is_another_postal_code_warns(fake_net):
     lyon = [{"nom": "Lyon", "code": "69123"}]
     fake_net([(towns.GEO_API, _by_code(lambda u, p: {"nom": "Albigny-sur-Saône", "code": "69003"}, lyon))])
-    with pytest.raises(TownResolutionError) as raised:
-        towns.resolve("69003")
-    message = str(raised.value)
-    assert "INSEE 69003 = Albigny-sur-Saône" in message
-    assert "postal code 69003 = Lyon (INSEE code 69123)" in message
+    town = towns.resolve("69003")
+    assert town == Town("69003", "Albigny-sur-Saône")
+    assert town.warnings == (
+        "69003 read as INSEE code (Albigny-sur-Saône); it is also the postal code of Lyon (INSEE 69123)",
+    )
+
+
+def test_resolve_insee_code_warning_lists_every_other_postal_commune(fake_net):
+    postal = [{"nom": "Picherande", "code": "63279"}, {"nom": "Clermont-Ferrand", "code": "63113"}]
+    fake_net([(towns.GEO_API, _by_code(lambda u, p: {"nom": "Clermont-Ferrand", "code": "63113"}, postal))])
+    town = towns.resolve("63113")
+    assert town == Town("63113", "Clermont-Ferrand")
+    assert town.warnings == (
+        "63113 read as INSEE code (Clermont-Ferrand); it is also the postal code of Picherande (INSEE 63279)",
+    )
 
 
 def test_resolve_code_that_is_insee_and_postal_of_the_same_commune(fake_net):
     same = [{"nom": "Digne-les-Bains", "code": "04070"}]
     fake_net([(towns.GEO_API, _by_code(lambda u, p: {"nom": "Digne-les-Bains", "code": "04070"}, same))])
-    assert towns.resolve("04070") == Town("04070", "Digne-les-Bains")
+    town = towns.resolve("04070")
+    assert town == Town("04070", "Digne-les-Bains") and town.warnings == ()
 
 
 def test_resolve_insee_code_without_postal_homonym_queries_postal_codes(fake_net):
@@ -310,14 +321,38 @@ def test_resolve_insee_code_without_postal_homonym_queries_postal_codes(fake_net
     assert (towns.GEO_API, {"codePostal": "63113", "fields": "nom,code"}) in fake.calls
 
 
-def test_resolve_postal_code_only_suggests_the_commune(fake_net):
-    aix = [{"nom": "Aix-en-Provence", "code": "13001"}]
-    fake_net([(towns.GEO_API, _by_code(lambda u, p: _http_404(), aix))])
+def test_resolve_postal_code_only_suggests_the_communes(fake_net):
+    digne = [{"nom": "Digne-les-Bains", "code": "04070"}, {"nom": "Entrages", "code": "04074"}]
+    fake_net([(towns.GEO_API, _by_code(lambda u, p: _http_404(), digne))])
     with pytest.raises(TownResolutionError) as raised:
-        towns.resolve("13080")
+        towns.resolve("04000")
     message = str(raised.value)
-    assert "13080 is not an INSEE code" in message
-    assert "postal code 13080 = Aix-en-Provence (INSEE code 13001)" in message
+    assert "04000 is not an INSEE code" in message
+    assert "postal code 04000 = Digne-les-Bains (INSEE code 04070), Entrages (INSEE code 04074)" in message
+
+
+def test_main_reports_code_warning_on_stderr_json_and_table(fake_net, capsys):
+    lyon = [{"nom": "Lyon", "code": "69123"}]
+    routes = _all_routes()
+    routes[0] = (towns.GEO_API, _by_code(lambda u, p: {"nom": "Albigny-sur-Saône", "code": "69003"}, lyon))
+    fake_net(routes)
+    warning = "69003 read as INSEE code (Albigny-sur-Saône); it is also the postal code of Lyon (INSEE 69123)"
+
+    assert compare_towns.main(["69003", "--json"]) == 0
+    captured = capsys.readouterr()
+    assert captured.err.strip() == f"warning: {warning}"
+    assert json.loads(captured.out)[0]["warnings"] == [warning]
+
+    assert compare_towns.main(["69003"]) == 0
+    out = capsys.readouterr().out
+    assert any(line.startswith("Warning") and "69003 read as INSEE code" in line for line in out.splitlines())
+
+
+def test_text_has_no_warning_row_without_warnings(fake_net):
+    fake_net(_all_routes())
+    report = compare_towns.compare(["Lyon 3e"])
+    assert report[0]["warnings"] == []
+    assert "Warning" not in compare_towns.render_text(report)
 
 
 def test_main_town_lookup_unreachable_exits_3(fake_net, capsys):

@@ -50,11 +50,18 @@ def collect(town: Town) -> dict:
 def compare(queries: list[str]) -> list[dict]:
     """Resolve every query, then collect every source for each town.
 
+    Each entry carries ``warnings``, the resolution warnings of its town.
     Raises ``TownResolutionError`` if any query does not resolve to exactly one town.
     """
     towns = [(query, resolve(query)) for query in queries]
     return [
-        {"query": query, "code": town.code, "name": town.name, "sources": collect(town)}
+        {
+            "query": query,
+            "code": town.code,
+            "name": town.name,
+            "warnings": list(town.warnings),
+            "sources": collect(town),
+        }
         for query, town in towns
     ]
 
@@ -62,6 +69,9 @@ def compare(queries: list[str]) -> list[dict]:
 def render_text(report: list[dict]) -> str:
     """Render the comparison as a fixed-width table, one column per town."""
     rows = [("Town", [[t["name"]] for t in report]), ("INSEE code", [[t["code"]] for t in report])]
+    if any(t.get("warnings") for t in report):
+        rows.append(("Warning", [t.get("warnings") or ["-"] for t in report]))
+    header_rows = len(rows)
     for segment, label in RENT_SEGMENTS.items():
         rows.append((label, [_rent_cell(t["sources"]["rents"], segment) for t in report]))
     rows.append(("Risks", [_risks_cell(t["sources"]["risks"]) for t in report]))
@@ -85,7 +95,7 @@ def render_text(report: list[dict]) -> str:
             parts = [cell[line] if line < len(cell) else "" for cell in wrapped]
             head = label if line == 0 else ""
             lines.append(head.ljust(label_width) + "".join(" | " + p.ljust(CELL_WIDTH) for p in parts).rstrip())
-        if index == 1:
+        if index == header_rows - 1:
             lines.append(separator)
     return "\n".join(lines)
 
@@ -172,6 +182,9 @@ def main(argv=None) -> int:
     except requests.RequestException as error:
         print(f"error: town lookup failed ({type(error).__name__})", file=sys.stderr)
         return 3
+    for town in report:
+        for warning in town["warnings"]:
+            print(f"warning: {warning}", file=sys.stderr)
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:

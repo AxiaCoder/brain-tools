@@ -2,7 +2,7 @@
 
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import requests
@@ -29,10 +29,11 @@ class TownResolutionError(ValueError):
 
 @dataclass(frozen=True)
 class Town:
-    """A resolved town: its INSEE code and official name."""
+    """A resolved town: its INSEE code, official name, and resolution warnings (not compared)."""
 
     code: str
     name: str
+    warnings: tuple[str, ...] = field(default=(), compare=False)
 
     @property
     def parent(self) -> Optional[tuple[str, str]]:
@@ -63,9 +64,10 @@ def normalize(name: str) -> str:
 def resolve(query: str) -> Town:
     """Resolve ``query`` - a name or a 5-character INSEE code - to a ``Town``.
 
-    Raises ``TownResolutionError`` when nothing matches, when the name search
-    returns no exact match or several, or when a numeric code is also the postal
-    code of another commune: the candidates are listed, none is picked.
+    A valid INSEE code always wins; if it is also another commune's postal code,
+    the town carries a warning. Raises ``TownResolutionError`` when nothing
+    matches, when a code is only a postal code, or when the name search returns
+    no exact match or several: the candidates are listed, none is picked.
     """
     query = query.strip()
     if INSEE_CODE.match(query):
@@ -74,21 +76,21 @@ def resolve(query: str) -> Town:
 
 
 def _resolve_code(code: str) -> Town:
-    """Resolve an INSEE code, refusing it when it also reads as another commune's postal code."""
+    """Resolve an INSEE code, warning when it is also the postal code of other communes."""
     town = _lookup_insee_code(code)
     postal = [c for c in _communes_with_postal_code(code) if town is None or c["code"] != town.code]
-    if not postal:
-        if town is None:
-            raise TownResolutionError(f"no commune or arrondissement with INSEE code {code}")
-        return town
-    postal_reading = f"postal code {code} = " + ", ".join(f"{c['nom']} (INSEE code {c['code']})" for c in postal)
     if town is None:
+        if not postal:
+            raise TownResolutionError(f"no commune or arrondissement with INSEE code {code}")
+        listed = ", ".join(f"{c['nom']} (INSEE code {c['code']})" for c in postal)
         raise TownResolutionError(
-            f"{code} is not an INSEE code; {postal_reading} - use that INSEE code or the town name"
+            f"{code} is not an INSEE code; postal code {code} = {listed} - use that INSEE code or the town name"
         )
-    raise TownResolutionError(
-        f"{code} is ambiguous: INSEE {code} = {town.name}; {postal_reading} - use the town name"
-    )
+    if not postal:
+        return town
+    listed = ", ".join(f"{c['nom']} (INSEE {c['code']})" for c in postal)
+    warning = f"{code} read as INSEE code ({town.name}); it is also the postal code of {listed}"
+    return Town(code=town.code, name=town.name, warnings=(warning,))
 
 
 def _lookup_insee_code(code: str) -> Optional[Town]:
