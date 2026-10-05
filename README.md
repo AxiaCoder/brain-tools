@@ -104,10 +104,19 @@ listed and nothing is picked.
 | Advertised rents, €/m² charges included, 2025 | « Carte des loyers », Ministère de la Transition écologique, via the data.gouv.fr Tabular API |
 | Natural and industrial risks | [Géorisques](https://georisques.gouv.fr) GASPAR |
 | Tap water compliance | [Hub'Eau](https://hubeau.eaufrance.fr) `qualite_eau_potable` |
+| Recorded crime: burglaries, thefts, violent thefts, armed robberies, assaults outside the family, vandalism | Communal base of crime recorded by the police and gendarmerie, Ministère de l'Intérieur, on data.gouv.fr |
+| Fibre (FTTH) coverage | « Indicateur France Très Haut Débit », ANCT, via the data.gouv.fr Tabular API |
 
-Risks and water are only published per commune: for a Paris, Lyon or Marseille arrondissement they
-are read for the whole city, and the output says so. A source that fails shows its error; the others
-still render.
+Risks, water and fibre are only published per commune: for a Paris, Lyon or Marseille arrondissement
+they are read for the whole city, and the output says so. Crime is published per arrondissement.
+A source that fails shows its error; the others still render.
+
+Crime shows, for the latest year, the count, the rate per 1,000 inhabitants — per 1,000 dwellings for
+burglaries — and the change of that rate in per-mille points over five years; a value the ministry
+withholds for statistical secrecy shows as `masked`. The crime file (about 40 MB) is downloaded on
+first use, indexed, and kept in `$DATAGOUV_CACHE`, by default `%LOCALAPPDATA%\brain-tools\datagouv`
+on Windows and `~/.cache/brain-tools/datagouv` elsewhere. It is downloaded again only when the
+ministry publishes a new file.
 
 ## Configuration
 

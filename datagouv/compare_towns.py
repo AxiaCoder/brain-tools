@@ -24,6 +24,14 @@ RENT_SEGMENTS = {
     "house": "Rent, house",
 }
 VERDICT_LABELS = {"non_compliant": "NON-compliant", "not_applicable": "n/a"}
+CRIME_INDICATORS = {
+    "burglary": "Crime, burglaries",
+    "theft_without_violence": "Crime, theft no violence",
+    "violent_theft_unarmed": "Crime, violent theft",
+    "armed_robbery": "Crime, armed robbery",
+    "assault_outside_family": "Crime, assault",
+    "vandalism": "Crime, vandalism",
+}
 
 
 def collect(town: Town) -> dict:
@@ -78,6 +86,9 @@ def render_text(report: list[dict]) -> str:
     rows.append(("Water, last sample", [_water_cell(t["sources"]["water"], None) for t in report]))
     rows.append(("Water, bacteriological", [_water_cell(t["sources"]["water"], "bacteriological") for t in report]))
     rows.append(("Water, physico-chemical", [_water_cell(t["sources"]["water"], "physico_chemical") for t in report]))
+    for key, label in CRIME_INDICATORS.items():
+        rows.append((label, [_crime_cell(t["sources"]["crime"], key) for t in report]))
+    rows.append(("Fibre (FTTH)", [_fibre_cell(t["sources"]["fibre"]) for t in report]))
 
     label_width = max(len(label) for label, _ in rows)
     lines = [
@@ -85,6 +96,8 @@ def render_text(report: list[dict]) -> str:
         "  value (low-high prediction interval); n = observations in the town;",
         "  'maille' = estimated on a group of towns, not the town alone.",
         "Water: compliance of the latest distinct samples (Hub'Eau).",
+        *_crime_header(report),
+        "Fibre: share of premises that can be connected to FTTH (ANCT).",
         "",
     ]
     separator = "-" * (label_width + (CELL_WIDTH + 3) * len(report))
@@ -158,6 +171,44 @@ def _water_cell(result: dict, field) -> list[str]:
     return [", ".join([f"{counts.get('compliant', 0)}/{result['samples']} compliant", *others])]
 
 
+def _crime_header(report: list[dict]) -> list[str]:
+    """Header lines for crime: year, rate bases, and the year the change is measured against."""
+    years = next((t["sources"]["crime"] for t in report if "year" in t["sources"]["crime"]), None)
+    if years is None:
+        return ["Crime: recorded offences (Ministère de l'Intérieur)."]
+    return [
+        f"Crime: offences recorded in {years['year']} (Ministère de l'Intérieur): count, rate",
+        "  per 1,000 inhabitants (burglaries: per 1,000 dwellings), change of the rate",
+        f"  in per-mille points since {years['base_year']}; 'masked' = withheld by the ministry.",
+    ]
+
+
+def _crime_cell(result: dict, key: str) -> list[str]:
+    """Crime cell: count, rate per mille and its change, or ``masked``."""
+    if "error" in result:
+        return [f"error ({result['error_type']}), see --json"]
+    row = result["indicators"].get(key)
+    if row is None:
+        return ["no data"]
+    if row["masked"]:
+        return ["masked"]
+    change = row["rate_change_points"]
+    trend = "" if change is None else f" ({change:+.2f} pts)"
+    return [f"{row['count']} · {row['rate_per_mille']:.2f}‰{trend}"]
+
+
+def _fibre_cell(result: dict) -> list[str]:
+    """Fibre cell: FTTH share, connectable premises out of all, quarter."""
+    if "error" in result:
+        return _scope_lines(result) + [f"error ({result['error_type']}), see --json"]
+    if result["ftth_share"] is None:
+        return _scope_lines(result) + ["no data"]
+    return _scope_lines(result) + [
+        f"{result['ftth_share']:.1f}% ({result['ftth_premises']}/{result['premises']})",
+        result["quarter"] or "",
+    ]
+
+
 def main(argv=None) -> int:
     """CLI entry point; returns the process exit code.
 
@@ -165,7 +216,7 @@ def main(argv=None) -> int:
     """
     parser = argparse.ArgumentParser(
         prog="python -m datagouv.compare_towns",
-        description="Compare French towns on rents, risks and tap water (public open data).",
+        description="Compare French towns on rents, risks, tap water, crime and fibre (public open data).",
     )
     parser.add_argument("towns", nargs="+", help="commune or arrondissement name, or INSEE code, not postal code")
     parser.add_argument("--json", action="store_true", help="print JSON instead of a table")

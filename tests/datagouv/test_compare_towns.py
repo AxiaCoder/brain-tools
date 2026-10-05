@@ -1,10 +1,11 @@
+import gzip
 import json
 
 import pytest
 import requests
 
 from datagouv import compare_towns, net, towns
-from datagouv.sources import rents, risks, water
+from datagouv.sources import crime, fibre, rents, risks, water
 from datagouv.towns import Town, TownResolutionError
 
 LYON_ARRONDISSEMENTS = [
@@ -78,6 +79,13 @@ class FakeNet:
                     raise result
                 return result
         raise AssertionError(f"unexpected URL {url}")
+
+
+@pytest.fixture(autouse=True)
+def crime_cache(monkeypatch, tmp_path):
+    cache = tmp_path / "datagouv-cache"
+    monkeypatch.setenv("DATAGOUV_CACHE", str(cache))
+    return cache
 
 
 @pytest.fixture
@@ -258,7 +266,7 @@ def test_arrondissement_uses_parent_for_commune_level_sources(fake_net):
     queried = {url: params for url, params in fake.calls}
     assert queried[risks.GASPAR_API]["code_insee"] == "69123"
     assert queried[water.HUBEAU_API]["code_commune"] == "69123"
-    assert all(p["INSEE_C__exact"] == "69383" for u, p in fake.calls if "tabular" in u)
+    assert all(p["INSEE_C__exact"] == "69383" for u, p in fake.calls if "INSEE_C__exact" in p)
     assert town["sources"]["risks"]["scope"] == {"code": "69123", "name": "Lyon"}
     assert town["sources"]["water"]["scope"] == {"code": "69123", "name": "Lyon"}
     assert "scope" not in town["sources"]["rents"]
@@ -609,7 +617,9 @@ def test_every_source_failing_still_renders(fake_net):
     [town] = compare_towns.compare(["Lyon 3e"])
     assert {r["error_type"] for r in town["sources"].values()} == {"Timeout"}
     text = compare_towns.render_text([town])
-    assert text.count("error (Timeout)") == len(compare_towns.RENT_SEGMENTS) + 4
+    assert text.count("error (Timeout)") == (
+        len(compare_towns.RENT_SEGMENTS) + 4 + len(compare_towns.CRIME_INDICATORS) + 1
+    )
 
 
 def test_one_unresolved_town_stops_before_any_source_call(fake_net):
@@ -628,6 +638,8 @@ def test_render_empty_results_and_verdict_labels():
                 "rents": {"segments": {"apartment": None, "house": {"rent_m2": None}}},
                 "risks": {"risks": []},
                 "water": {"samples": 0, "last_sample_date": None},
+                "crime": {"indicators": {}},
+                "fibre": {"ftth_share": None},
             },
         },
         {
@@ -652,6 +664,8 @@ def test_render_empty_results_and_verdict_labels():
                     "bacteriological": {"compliant": 2, "non_compliant": 1, "not_applicable": 1},
                     "physico_chemical": {"derogation": 4},
                 },
+                "crime": {"indicators": {}},
+                "fibre": {"ftth_share": None},
             },
         },
     ]
@@ -721,3 +735,223 @@ def test_get_json_raises_on_http_error(monkeypatch):
     monkeypatch.setattr(requests, "get", lambda *a, **k: _FakeResponse(404, None))
     with pytest.raises(requests.HTTPError):
         net.get_json("https://x.test/missing")
+
+
+# --- crime ------------------------------------------------------------------
+
+CRIME_HEADER = (
+    "CODGEO_2026;annee;indicateur;unite_de_compte;nombre;taux_pour_mille;est_diffuse;"
+    "insee_pop;insee_pop_millesime;insee_log;insee_log_millesime;"
+    "complement_info_nombre;complement_info_taux"
+)
+
+
+def _crime_line(code, year, indicator, count, rate, diffused="diff", complement="NA;NA"):
+    return (
+        f'"{code}";"{year}";"{indicator}";"Infraction";{count};{rate};"{diffused}";'
+        f'"5409";"2023";"2417";"2022";{complement}'
+    )
+
+
+CRIME_LINES = [
+    CRIME_HEADER,
+    _crime_line("13074", 2025, "Cambriolages de logement", '"6"', '"2,4823480"'),
+    _crime_line("13074", 2024, "Cambriolages de logement", '"9"', '"3,9000000"'),
+    _crime_line("13074", 2020, "Cambriolages de logement", '"4"', '"1,7000000"'),
+    _crime_line("13074", 2025, "Vols avec armes", "NA", "NA", "ndiff", '"4,5692308";"1,1234425"'),
+    _crime_line("13074", 2025, "Destructions et dégradations volontaires", '"12"', '"2,2185247"'),
+    _crime_line("13074", 2020, "Destructions et dégradations volontaires", "NA", "NA", "ndiff"),
+    _crime_line("13074", 2025, "Vols de véhicule", '"3"', '"0,5"'),
+    _crime_line("13074", 2025, "Violences physiques intrafamiliales", '"2"', '"0,4"'),
+    _crime_line("69383", 2025, "Cambriolages de logement", '"500"', '"8,1"'),
+]
+
+CRIME_URL = "https://static.data.gouv.fr/resources/crime/20260709/donnee-2025.csv.gz"
+
+
+def _catalog(url=CRIME_URL):
+    return {
+        "resources": [
+            {"type": "main", "format": "parquet", "title": "COM - base (parquet)", "url": "https://x/p.parquet"},
+            {"type": "main", "format": "csv", "title": "DEP - base départementale", "url": "https://x/dep.csv"},
+            {"type": "main", "format": "csv.gz", "title": "COM - base communale (fichier csv compressé)", "url": url},
+        ]
+    }
+
+
+def _gz(path, lines, encoding):
+    with gzip.open(path, "wb") as out:
+        out.write(("\n".join(lines) + "\n").encode(encoding))
+
+
+@pytest.fixture
+def crime_net(fake_net, monkeypatch):
+    def install(catalog=None, lines=CRIME_LINES, encoding="utf-8"):
+        state = {"catalog": catalog or _catalog(), "downloads": []}
+        fake_net([(crime.CATALOG_API, lambda u, p: state["catalog"])])
+
+        def download(url, path, timeout=None):
+            state["downloads"].append(url)
+            _gz(path, lines, encoding)
+
+        monkeypatch.setattr(net, "download", download)
+        return state
+
+    return install
+
+
+def test_crime_parses_retained_indicators_of_latest_year(crime_net):
+    crime_net()
+    result = crime.fetch("13074")
+    assert result["year"] == 2025 and result["base_year"] == 2020
+    assert result["file"] == CRIME_URL
+    assert result["indicators"]["burglary"] == {
+        "count": 6,
+        "rate_per_mille": 2.48,
+        "rate_base": "dwellings",
+        "masked": False,
+        "rate_change_points": 0.78,
+    }
+    assert set(result["indicators"]) == {"burglary", "armed_robbery", "vandalism"}
+
+
+def test_crime_masked_value_is_not_the_comparison_average(crime_net):
+    crime_net()
+    armed = crime.fetch("13074")["indicators"]["armed_robbery"]
+    assert armed["masked"] is True
+    assert armed["count"] is None and armed["rate_per_mille"] is None
+    assert armed["rate_base"] == "inhabitants"
+
+
+def test_crime_change_is_none_when_base_year_masked(crime_net):
+    crime_net()
+    vandalism = crime.fetch("13074")["indicators"]["vandalism"]
+    assert vandalism["count"] == 12 and vandalism["rate_per_mille"] == 2.22
+    assert vandalism["rate_change_points"] is None
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "cp1252"])
+def test_crime_reads_accented_labels_in_either_encoding(crime_net, encoding):
+    crime_net(encoding=encoding)
+    assert "vandalism" in crime.fetch("13074")["indicators"]
+
+
+def test_crime_town_absent_has_no_indicators(crime_net):
+    crime_net()
+    assert crime.fetch("99999")["indicators"] == {}
+
+
+def test_crime_arrondissement_is_queried_with_its_own_code(crime_net):
+    crime_net()
+    assert crime.COMMUNE_LEVEL_ONLY is False
+    assert crime.fetch("69383")["indicators"]["burglary"]["count"] == 500
+
+
+def test_crime_cache_hit_does_not_download_again(crime_net, crime_cache):
+    state = crime_net()
+    crime.fetch("13074")
+    crime.fetch("69383")
+    assert state["downloads"] == [CRIME_URL]
+    assert sorted(f.name for f in crime_cache.iterdir()) == [crime.INDEX_FILE]
+
+
+def test_crime_new_url_in_catalog_refreshes_the_cache(crime_net):
+    state = crime_net()
+    crime.fetch("13074")
+    newer = CRIME_URL.replace("20260709", "20270110")
+    state["catalog"] = _catalog(newer)
+    assert crime.fetch("13074")["file"] == newer
+    assert state["downloads"] == [CRIME_URL, newer]
+
+
+def test_crime_failed_download_keeps_previous_index(crime_net, monkeypatch, crime_cache):
+    state = crime_net()
+    crime.fetch("13074")
+    state["catalog"] = _catalog(CRIME_URL + "?v2")
+
+    def broken(url, path, timeout=None):
+        raise requests.ConnectionError("static down")
+
+    monkeypatch.setattr(net, "download", broken)
+    with pytest.raises(requests.ConnectionError):
+        crime.fetch("13074")
+    assert sorted(f.name for f in crime_cache.iterdir()) == [crime.INDEX_FILE]
+    monkeypatch.setattr(net, "download", lambda *a, **k: pytest.fail("no download expected"))
+    state["catalog"] = _catalog()
+    assert crime.fetch("13074")["indicators"]["burglary"]["count"] == 6
+
+
+def test_crime_catalog_without_communal_file_raises(crime_net):
+    crime_net(catalog={"resources": [{"type": "main", "format": "csv", "title": "DEP - x", "url": "u"}]})
+    with pytest.raises(LookupError):
+        crime.fetch("13074")
+
+
+def test_crime_cache_dir_follows_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATAGOUV_CACHE", str(tmp_path / "c"))
+    assert crime.cache_dir() == tmp_path / "c"
+    monkeypatch.delenv("DATAGOUV_CACHE")
+    assert crime.cache_dir().parts[-2:] == ("brain-tools", "datagouv")
+
+
+def test_render_crime_cells_and_header():
+    result = {
+        "year": 2025,
+        "base_year": 2020,
+        "indicators": {
+            "burglary": {"count": 6, "rate_per_mille": 2.48, "masked": False, "rate_change_points": 0.78},
+            "armed_robbery": {"count": None, "rate_per_mille": None, "masked": True, "rate_change_points": None},
+            "vandalism": {"count": 12, "rate_per_mille": 2.22, "masked": False, "rate_change_points": None},
+        },
+    }
+    assert compare_towns._crime_cell(result, "burglary") == ["6 · 2.48‰ (+0.78 pts)"]
+    assert compare_towns._crime_cell(result, "armed_robbery") == ["masked"]
+    assert compare_towns._crime_cell(result, "vandalism") == ["12 · 2.22‰"]
+    assert compare_towns._crime_cell(result, "assault_outside_family") == ["no data"]
+    header = "\n".join(compare_towns._crime_header([{"sources": {"crime": result}}]))
+    assert "2025" in header and "since 2020" in header and "per 1,000 dwellings" in header
+
+
+# --- fibre ------------------------------------------------------------------
+
+FIBRE_ROW = {
+    "insee_com": "69123",
+    "com_lib": "Lyon",
+    "locaux_arcep": 385933,
+    "locaux_ftth": 381720,
+    "ferm_cu26": 40090.17,
+    "trimestre": "2026 T2",
+}
+
+
+def test_fibre_share_of_ftth_premises(fake_net):
+    fake = fake_net([(fibre.TABULAR_API, lambda u, p: {"data": [FIBRE_ROW]})])
+    result = fibre.fetch("69123")
+    assert fake.calls[0][1] == {"insee_com__exact": "69123", "page_size": 1}
+    assert result["ftth_share"] == 98.9
+    assert (result["ftth_premises"], result["premises"], result["quarter"]) == (381720, 385933, "2026 T2")
+
+
+def test_fibre_town_not_listed(fake_net):
+    fake_net([(fibre.TABULAR_API, lambda u, p: {"data": []})])
+    result = fibre.fetch("69383")
+    assert result["ftth_share"] is None and result["quarter"] is None
+
+
+def test_fibre_zero_premises_has_no_share(fake_net):
+    fake_net([(fibre.TABULAR_API, lambda u, p: {"data": [dict(FIBRE_ROW, locaux_arcep=0, locaux_ftth=0)]})])
+    assert fibre.fetch("12345")["ftth_share"] is None
+
+
+def test_fibre_for_arrondissement_uses_parent_commune(fake_net):
+    routes = _all_routes()
+    routes.insert(1, (fibre.TABULAR_API, lambda u, p: {"data": [FIBRE_ROW]}))
+    fake = fake_net(routes)
+    [town] = compare_towns.compare(["Lyon 3e"])
+    assert [p for u, p in fake.calls if u == fibre.TABULAR_API] == [{"insee_com__exact": "69123", "page_size": 1}]
+    assert town["sources"]["fibre"]["scope"] == {"code": "69123", "name": "Lyon"}
+    assert compare_towns._fibre_cell(town["sources"]["fibre"]) == [
+        "[data for Lyon as a whole]",
+        "98.9% (381720/385933)",
+        "2026 T2",
+    ]
