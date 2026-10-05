@@ -119,11 +119,14 @@ first use, indexed, and kept in `$DATAGOUV_CACHE`, by default `%LOCALAPPDATA%\br
 on Windows and `~/.cache/brain-tools/datagouv` elsewhere. It is downloaded again only when the
 ministry publishes a new file.
 
-Transport counts, per mode, the lines with at least one stop in the town — distinct by line number, so
-both directions of a line count once; light rail counts as tram, trolleybus as bus, and trains are
-regional and commuter lines only — and the stops, distinct by name. Metro and tram stations and train
-stations are named when there are eight or fewer. The Overpass servers are often busy: three public
-endpoints are tried in turn, and the cells show an error when all of them fail.
+Transport counts, per mode, the lines with at least one stop or platform in the town, and the stops,
+distinct by name. A line is the route master that groups its directions when OpenStreetMap has one,
+otherwise its ref; refs and names compare without accents, case, punctuation or leading zeros, and a
+ref `a;b` counts as two lines. Light rail counts as tram, trolleybus as bus. Trains are regional and
+commuter lines only — network TER, RER or Transilien, or a regional, commuter or suburban service —
+never a TGV, Ouigo, Intercités, ICE or any long-distance, night or high-speed service. Metro and tram
+stations and train stations are named when there are eight or fewer. The Overpass servers are often
+busy: three public endpoints are tried in turn, and the cells show an error when all of them fail.
 
 ## Configuration
 

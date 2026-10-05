@@ -1445,3 +1445,140 @@ def test_render_text_empty_transport_says_none():
 def test_summarize_ignores_stops_with_an_empty_name():
     modes = transport.summarize([_node(highway="bus_stop", name=""), _node(highway="bus_stop", name="Gare")])
     assert modes["bus"]["stops"] == ["Gare"]
+
+
+# --- transport: distinct lines, long-distance trains, station ways ----------
+
+
+def _rel(rel_id, **tags):
+    return {"type": "relation", "id": rel_id, "tags": tags}
+
+
+def _master(rel_id, members, **tags):
+    master = _rel(rel_id, type="route_master", **tags)
+    master["members"] = [{"type": "relation", "ref": member, "role": ""} for member in members]
+    return master
+
+
+def test_route_master_counts_its_directions_once_even_without_ref():
+    modes = transport.summarize([
+        _rel(1, type="route", route="train", network="TER Centre – Val de Loire", service="regional",
+             name="Rémi Express Paris → Les Aubrais → Tours"),
+        _rel(2, type="route", route="train", network="TER Centre – Val de Loire", service="regional",
+             name="Rémi Express Tours → Les Aubrais → Paris"),
+        _master(10, [1, 2], route_master="train", name="Rémi Express Paris ↔ Les Aubrais ↔ Tours"),
+    ])
+    assert modes["train"]["lines"] == ["Rémi Express Paris ↔ Les Aubrais ↔ Tours"]
+
+
+def test_route_master_ref_wins_over_variant_refs():
+    modes = transport.summarize([
+        _rel(1, type="route", route="train", network="TER Auvergne-Rhône-Alpes", ref="TER 60;TER 62"),
+        _rel(2, type="route", route="train", network="TER Auvergne-Rhône-Alpes", ref="TER 60"),
+        _rel(3, type="route", route="bus", ref="12"),
+        _rel(4, type="route", route="bus", ref="12/14"),
+        _master(10, [1, 2], route_master="train", ref="TER 60"),
+        _master(11, [3, 4], route_master="bus", ref="12"),
+    ])
+    assert modes["train"]["lines"] == ["TER 60"]
+    assert modes["bus"]["lines"] == ["12"]
+
+
+def test_route_ref_is_used_when_its_master_has_none():
+    modes = transport.summarize([
+        _rel(1, type="route", route="train", network="TER Centre – Val de Loire", ref="TER 4"),
+        _master(10, [1], route_master="train", name="TER 4 : Orléans ↔ Étampes ↔ Paris"),
+    ])
+    assert modes["train"]["lines"] == ["TER 4"]
+
+
+def test_multi_valued_ref_is_several_lines_not_one_more():
+    modes = transport.summarize([
+        _rel(1, type="route", route="train", network="TER Auvergne-Rhône-Alpes", ref="TER 60;TER 62"),
+        _rel(2, type="route", route="train", network="TER Auvergne-Rhône-Alpes", ref="TER 60"),
+        _rel(3, type="route", route="train", network="TER Auvergne-Rhône-Alpes", ref="TER 62"),
+    ])
+    assert modes["train"]["lines"] == ["TER 60", "TER 62"]
+
+
+def test_line_refs_ignore_leading_zeros_case_and_spacing():
+    modes = transport.summarize([
+        _rel(1, type="route", route="train", network="TER Bourgogne-Franche-Comté", ref="TER 07"),
+        _rel(2, type="route", route="train", network="TER Centre – Val de Loire", ref="TER 7"),
+        _rel(3, type="route", route="train", network="TER Centre – Val de Loire", ref="ter  7"),
+        _rel(4, type="route", route="bus", ref="C 3"),
+        _rel(5, type="route", route="bus", ref="C3"),
+        _rel(6, type="route", route="bus", ref="10"),
+        _rel(7, type="route", route="bus", ref="100"),
+    ])
+    assert modes["train"]["lines"] == ["TER 07"]
+    assert modes["bus"]["lines"] == ["10", "100", "C 3"]
+
+
+@pytest.mark.parametrize("tags", [
+    {"route": "train", "ref": "ICN 5790", "network": "TER Bourgogne-Franche-Comté"},
+    {"route": "train", "ref": "ICN 5790/91", "network": "TER Bourgogne-Franche-Comté"},
+    {"route": "train", "ref": "ICE 402", "network": "TER Centre – Val de Loire", "service": "national"},
+    {"route": "train", "ref": "IC 410", "network": "Intercités", "service": "national"},
+    {"route": "train", "ref": "190A", "network": "Intercités", "service": "regional"},
+    {"route": "train", "ref": "3731", "network": "Intercités", "service": "night"},
+    {"route": "train", "ref": "TGV 515", "network": "TGV", "service": "national"},
+    {"route": "train", "ref": "6821", "network": "TGV InOui"},
+    {"route": "train", "ref": "4071", "network": "Ouigo Train Classique", "service": "long_distance"},
+    {"route": "train", "ref": "Lyria", "network": "TGV Lyria"},
+    {"route": "train", "ref": "TER 1", "network": "TER Centre – Val de Loire", "service": "high_speed"},
+])
+def test_long_distance_trains_are_excluded_whatever_network_or_service(tags):
+    assert transport.route_mode(tags) is None
+
+
+@pytest.mark.parametrize("tags", [
+    {"route": "train", "ref": "TER 2", "network": "TER Centre – Val de Loire"},
+    {"route": "train", "ref": "TER 63", "network": "TER Auvergne-Rhône-Alpes"},
+    {"route": "train", "ref": "C", "network": "RER", "service": "commuter", "passenger": "suburban"},
+    {"route": "train", "name": "TER 1 Rémi Express : Tours - Paris", "network": "TER Centre – Val de Loire",
+     "service": "regional"},
+])
+def test_regional_trains_are_kept(tags):
+    assert transport.route_mode(tags) == "train"
+
+
+def test_stop_names_are_distinct_on_a_folded_form():
+    modes = transport.summarize([
+        _node(highway="bus_stop", name="Cité Jean Macé"),
+        _node(highway="bus_stop", name="Cité Jean-Macé"),
+        _node(highway="bus_stop", name="Foch - Ferrié"),
+        _node(highway="bus_stop", name="Foch - Férrié"),
+        _node(highway="bus_stop", name="foch  ferrie"),
+        _node(highway="bus_stop", name="Gare"),
+    ])
+    assert modes["bus"]["stops"] == ["Cité Jean Macé", "Foch - Ferrié", "Gare"]
+
+
+def test_stations_mapped_as_ways_or_relations_count():
+    modes = transport.summarize([
+        {"type": "way", "id": 1, "tags": {"railway": "station", "station": "subway", "name": "Vieux Port"}},
+        {"type": "relation", "id": 2, "tags": {"public_transport": "stop_area", "railway": "station",
+                                               "station": "subway", "name": "Castellane"}},
+        {"type": "way", "id": 3, "tags": {"railway": "station", "name": "Marseille Saint-Charles"}},
+        _node(railway="station", station="subway", name="Noailles"),
+    ])
+    assert modes["subway"]["stops"] == ["Castellane", "Noailles", "Vieux Port"]
+    assert modes["train"]["stops"] == ["Marseille Saint-Charles"]
+
+
+def test_transport_query_takes_station_ways_and_route_masters(fake_net):
+    fake = fake_net([(transport.ENDPOINTS[0], lambda u, p: {"elements": [
+        {"type": "area", "id": 3600000001},
+        {"type": "way", "id": 1, "tags": {"railway": "station", "station": "subway", "name": "Vieux Port"}},
+        _rel(5, type="route", route="subway", ref="M1", name="M1 : La Rose → La Fourragère"),
+        _rel(6, type="route", route="subway", ref="M1", name="M1 : La Fourragère → La Rose"),
+        _master(9, [5, 6], route_master="subway", ref="M1"),
+    ]})])
+    modes = transport.fetch("13201")["modes"]
+    assert modes["subway"] == {"lines": ["M1"], "stops": ["Vieux Port"]}
+    [(_, params)] = fake.calls
+    for selector in ('nwr(area.a)["station"="subway"]', 'nwr(area.a)["railway"="tram_stop"]',
+                     'nwr(area.a)["railway"~"^(station|halt)$"]', "rel(bw.s)", "rel(bw.p)",
+                     'rel(br.r)["type"="route_master"]'):
+        assert selector in params["data"]
