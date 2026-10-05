@@ -40,6 +40,7 @@ LONG_DISTANCE_SERVICES = {"long_distance", "high_speed", "night", "national", "i
 LONG_DISTANCE_BRANDS = re.compile(
     r"\b(IC|ICE|ICN|TGV|Ouigo|Intercit[ée]s|InterCityExpress|Lyria|Eurostar|Thalys)\b", re.IGNORECASE
 )
+LONG_DISTANCE_COACHES = re.compile(r"\b(Flix\w*|BlaBla\w*|Eurolines|Ouibus|Alsa)\b", re.IGNORECASE)
 ROUTES = '["type"="route"]["route"~"^(subway|tram|light_rail|bus|trolleybus|train)$"]'
 
 QUERY = """[out:json][timeout:{timeout}];
@@ -68,6 +69,10 @@ class OverpassError(RuntimeError):
     """Every Overpass endpoint failed, or none knows the town's boundary."""
 
 
+class BoundaryNotFound(OverpassError):
+    """Endpoints answered, but none found the boundary the query is scoped to."""
+
+
 def fetch(code: str) -> dict:
     """Return, per mode, the lines serving INSEE ``code`` and its distinct stops.
 
@@ -77,13 +82,14 @@ def fetch(code: str) -> dict:
     stops or platforms lies inside it; train lines are regional and commuter ones
     only, train stops are stations and halts. Unnamed stops are not counted; see
     ``summarize`` for what makes lines and stops distinct. Endpoints are tried in
-    order; raises ``OverpassError`` when all fail or when OpenStreetMap has no
-    boundary tagged with ``code``.
+    order; raises ``BoundaryNotFound`` when no endpoint that answered knows a
+    boundary tagged with ``code``, ``OverpassError`` when none answered.
     """
-    body, endpoint = query(QUERY.format(timeout=SERVER_TIMEOUT_SECONDS, code=code, routes=ROUTES))
+    try:
+        body, endpoint = query(QUERY.format(timeout=SERVER_TIMEOUT_SECONDS, code=code, routes=ROUTES))
+    except BoundaryNotFound as error:
+        raise BoundaryNotFound(f"no OpenStreetMap boundary with ref:INSEE={code} - {error}") from None
     elements = body.get("elements") or []
-    if not any(element.get("type") == "area" for element in elements):
-        raise OverpassError(f"no OpenStreetMap boundary with ref:INSEE={code}")
     return {
         "source": SOURCE,
         "attribution": ATTRIBUTION,
@@ -96,12 +102,15 @@ def query(text: str) -> tuple[dict, str]:
     """Run the Overpass query ``text`` on each endpoint in turn; return the body and the endpoint.
 
     An endpoint fails on any network error, a non-JSON body, or a body whose
-    ``remark`` reports a runtime error (a truncated answer). When every endpoint
+    ``remark`` reports a runtime error (a truncated answer), or a body without an
+    ``area`` element (the scoping boundary not found there). When every endpoint
     fails, those that answered with an HTTP error status (a busy server) are tried
     once more after ``RETRY_PAUSE_SECONDS``. Raises ``OverpassError`` naming every
-    failure when no endpoint answers.
+    failure when no endpoint answers, or ``BoundaryNotFound`` when at least one
+    answered without an area.
     """
     failures = []
+    without_area = []
     endpoints = ENDPOINTS
     for attempt in range(2):
         busy = []
@@ -119,22 +128,29 @@ def query(text: str) -> tuple[dict, str]:
             if "error" in remark.lower():
                 failures.append(f"{endpoint}: {remark}")
                 continue
+            if not any(element.get("type") == "area" for element in body.get("elements") or []):
+                without_area.append(endpoint)
+                failures.append(f"{endpoint}: no area")
+                continue
             return body, endpoint
         if attempt == 0 and busy:
             time.sleep(RETRY_PAUSE_SECONDS)
         endpoints = busy
+    if without_area:
+        raise BoundaryNotFound("; ".join(failures))
     raise OverpassError("every Overpass endpoint failed - " + "; ".join(failures))
 
 
 def summarize(elements: list[dict]) -> dict:
     """Group stops and route relations by mode into distinct lines and stop names.
 
-    A route that belongs to a ``route_master`` is the line of that master, so its
-    directions and variants count once; see ``line_names``. A multi-valued ref
-    ``a;b`` is several lines. Lines and stops are distinct on a folded form -
-    leading zeros, case, accents, punctuation and spacing aside - and each keeps
-    its alphabetically first spelling. Metro, tram and train stops are further
-    merged by ``merge_stops``.
+    Each route stands for the lines ``line_names`` gives - its route master's refs
+    when the master has one - and lines are distinct on ``line_key``: routes or
+    route masters whose refs fold to the same key are one line, whatever their
+    network. Stops are distinct on ``towns.normalize`` of their name (accents, case
+    and punctuation aside); metro, tram and train stops are further merged by
+    ``merge_stops``. Each line and stop keeps its alphabetically first spelling,
+    a merged stop its shortest.
     """
     masters = {}
     for element in elements:
@@ -179,7 +195,7 @@ def merge_stops(names: dict, places: dict) -> dict:
     ``(lat, lon)`` points. Two stops merge when one folded name is the other's
     leading words and two of their points lie within ``MERGE_DISTANCE_METRES``;
     merging is transitive and the group keeps its shortest spelling. A stop
-    without coordinates merges with none.
+    without coordinates merges with no other name.
     """
     keys = list(names)
     parent = {key: key for key in keys}
@@ -242,7 +258,10 @@ def line_names(route: dict, master: dict) -> list[str]:
 
 
 def line_key(name: str) -> str:
-    """Fold a line ref for comparison: ``TER 07``, ``ter 7`` and ``TER7`` are the same line."""
+    """Fold a line ref for comparison - accents, case, punctuation, spaces and leading zeros aside.
+
+    ``TER 07``, ``ter 7`` and ``TER7`` are the same line.
+    """
     return re.sub(r"(?<!\d)0+(?=\d)", "", normalize(name).replace(" ", ""))
 
 
@@ -253,13 +272,20 @@ def _keep(names: dict, key: str, name: str) -> None:
 
 
 def route_mode(tags: dict):
-    """The mode of a route relation, or ``None`` for a long-distance train or another route.
+    """The mode of a route relation, or ``None`` for a long-distance train or coach, or another route.
+
+    A bus is a long-distance coach when its service is long-distance or its
+    network, operator or brand names a coach company (FlixBus, BlaBlaCar Bus...).
 
     A train is regional when its network is TER, RER or Transilien, or its service
     is regional, commuter or suburban - unless its service is long-distance or its
     ref, name, network or brand names a long-distance product (TGV, Intercités, ICE...).
     """
     mode = ROUTE_MODES.get(tags.get("route"))
+    if mode == "bus":
+        companies = " ".join(tags.get(key) or "" for key in ("network", "operator", "brand"))
+        if tags.get("service") in LONG_DISTANCE_SERVICES or LONG_DISTANCE_COACHES.search(companies):
+            return None
     if mode != "train":
         return mode
     labels = " ".join(tags.get(key) or "" for key in ("ref", "name", "network", "brand"))

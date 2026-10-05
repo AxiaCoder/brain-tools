@@ -120,15 +120,20 @@ on Windows and `~/.cache/brain-tools/datagouv` elsewhere. It is downloaded again
 ministry publishes a new file.
 
 Transport counts, per mode, the lines with at least one stop or platform in the town, and the stops,
-distinct by name. A line is the route master that groups its directions when OpenStreetMap has one,
-otherwise its ref; refs and names compare without accents, case, punctuation or leading zeros, and a
-ref `a;b` counts as two lines. Light rail counts as tram, trolleybus as bus. Trains are regional and
-commuter lines only — network TER, RER or Transilien, or a regional, commuter or suburban service —
-never a TGV, Ouigo, Intercités, ICE or any long-distance, night or high-speed service. A metro, tram
-or train stop mapped twice — `Guillotière` and `Guillotière - Gabriel Péri` — counts once when the
-points are within 150 m and one name is the start of the other; it keeps the shorter name. Metro and tram
-stations and train stations are named when there are eight or fewer. The Overpass servers are often
-busy: three public endpoints are tried in turn, and the cells show an error when all of them fail.
+distinct by name — accents, case and punctuation aside. Lines are counted by ref: a route takes the refs
+of the route master that groups its directions when the master has one, otherwise its own refs, and
+when neither has a ref, the master's name, else the route's. Refs compare without accents, case,
+punctuation, spaces or leading zeros, so two lines with the same ref count once even on two networks,
+and a ref `a;b` counts as two lines. Light rail counts as tram, trolleybus as bus. Bus lines leave out
+long-distance coaches: a long-distance service, or a FlixBus, BlaBlaCar, Eurolines, Ouibus or Alsa
+network, operator or brand. Trains are regional and commuter lines only — network TER, RER or
+Transilien, or a regional, commuter or suburban service — never a TGV, Ouigo, Intercités, ICE or any
+long-distance, night or high-speed service. A metro, tram or train stop mapped twice — `Guillotière`
+and `Guillotière - Gabriel Péri` — counts once when the points are within 150 m and one name is the
+start of the other; it keeps the shorter name. Metro and tram stations and train stations are named
+when there are eight or fewer. The Overpass servers are often busy: three public endpoints are tried
+in turn, and the cells show an error when all of them fail. A town is reported without an
+OpenStreetMap boundary only when an endpoint answered without finding one and no other found it.
 
 ## Configuration
 

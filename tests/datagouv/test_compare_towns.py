@@ -1665,3 +1665,65 @@ def test_transport_query_asks_stop_coordinates(fake_net):
     transport.fetch("69383")
     [(_, params)] = fake.calls
     assert ".s out tags center;" in params["data"]
+
+
+# --- transport: long-distance coaches, boundary not found -------------------
+
+
+@pytest.mark.parametrize("tags", [
+    {"route": "bus", "ref": "N700", "network": "FlixBus"},
+    {"route": "bus", "ref": "112", "operator": "FlixBus France"},
+    {"route": "bus", "ref": "Paris - Lyon", "brand": "BlaBlaCar Bus"},
+    {"route": "bus", "ref": "Lyon - Madrid", "operator": "Eurolines"},
+    {"route": "bus", "ref": "X1", "network": "Cars Région Express", "service": "long_distance"},
+    {"route": "trolleybus", "ref": "T", "operator": "Flix"},
+])
+def test_long_distance_coaches_are_not_bus_lines(tags):
+    assert transport.route_mode(tags) is None
+
+
+@pytest.mark.parametrize("tags", [
+    {"route": "bus", "ref": "C9", "network": "TCL", "operator": "Keolis Lyon"},
+    {"route": "bus", "ref": "A71", "network": "Cars Région Ain", "operator": "Philibert"},
+    {"route": "bus", "ref": "X75", "network": "Cars Région Express", "operator": "SRADDA"},
+    {"route": "trolleybus", "ref": "C3", "network": "TCL"},
+])
+def test_urban_and_regional_buses_stay_bus_lines(tags):
+    assert transport.route_mode(tags) == "bus"
+
+
+def test_answer_without_area_falls_back_to_the_next_endpoint(fake_net):
+    def answer(url, params):
+        return {"elements": []} if url == transport.ENDPOINTS[0] else OVERPASS
+
+    fake = fake_net([("https://", answer)])
+    result = transport.fetch("69383")
+    assert result["endpoint"] == transport.ENDPOINTS[1]
+    assert [url for url, _ in fake.calls] == transport.ENDPOINTS[:2]
+
+
+def test_boundary_not_found_only_after_every_endpoint(fake_net, overpass_pauses):
+    fake = fake_net([("https://", lambda u, p: {"elements": []})])
+    with pytest.raises(transport.BoundaryNotFound, match="ref:INSEE=99999"):
+        transport.fetch("99999")
+    assert [url for url, _ in fake.calls] == transport.ENDPOINTS
+    assert overpass_pauses == []
+
+
+def test_boundary_not_found_when_the_only_answer_has_no_area(fake_net, overpass_pauses):
+    def answer(url, params):
+        if url == transport.ENDPOINTS[1]:
+            return {"elements": []}
+        return requests.ReadTimeout("slow")
+
+    fake_net([("https://", answer)])
+    with pytest.raises(transport.BoundaryNotFound) as raised:
+        transport.fetch("99999")
+    assert "ReadTimeout" in str(raised.value) and "no area" in str(raised.value)
+
+
+def test_no_answer_at_all_is_not_a_missing_boundary(fake_net, overpass_pauses):
+    fake_net([("https://", lambda u, p: requests.ReadTimeout("slow"))])
+    with pytest.raises(transport.OverpassError) as raised:
+        transport.fetch("69383")
+    assert not isinstance(raised.value, transport.BoundaryNotFound)
