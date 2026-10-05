@@ -77,9 +77,37 @@ ingest/
   batch.py          extract many links in one process (the model loads once)
   media.py          the one file kept per post: its cover image
   triage.py         a reading list of extracted links waiting for curation
+datagouv/           compare towns on public open data (independent from ingest)
+  towns.py          name or INSEE code → commune or arrondissement
+  sources/          rents.py, risks.py, water.py — one module per source
 tests/              pytest, no network, no GPU
 docs/curation.md    the curation contract
 ```
+
+## datagouv — compare towns
+
+A side tool, independent from `ingest`: it compares French towns side by side on public open data.
+No API key, no configuration.
+
+```bash
+python -m datagouv.compare_towns "Lyon 3e" "Lyon 7e" Clermont-Ferrand 63113
+python -m datagouv.compare_towns "Lyon 3e" Clermont-Ferrand --json
+```
+
+A town is a commune or municipal arrondissement name, or its INSEE code. A name must match exactly
+(accents and case aside, `Lyon 3e` for `Lyon 3e Arrondissement`); otherwise the candidates are
+listed and nothing is picked.
+
+| Data | Source |
+|---|---|
+| Town lookup | [geo.api.gouv.fr](https://geo.api.gouv.fr) |
+| Advertised rents, €/m² charges included, 2025 | « Carte des loyers », Ministère de la Transition écologique, via the data.gouv.fr Tabular API |
+| Natural and industrial risks | [Géorisques](https://georisques.gouv.fr) GASPAR |
+| Tap water compliance | [Hub'Eau](https://hubeau.eaufrance.fr) `qualite_eau_potable` |
+
+Risks and water are only published per commune: for a Paris, Lyon or Marseille arrondissement they
+are read for the whole city, and the output says so. A source that fails shows its error; the others
+still render.
 
 ## Configuration
 
