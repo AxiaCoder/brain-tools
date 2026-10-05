@@ -2,8 +2,10 @@
 
 import csv
 import gzip
+import json
 import os
 import sqlite3
+import time
 from contextlib import closing
 from pathlib import Path
 from typing import Iterator, Optional
@@ -20,6 +22,9 @@ RESOURCE_FORMAT = "csv.gz"
 CHANGE_YEARS = 5
 DOWNLOAD_TIMEOUT_SECONDS = 120
 INDEX_FILE = "crime.sqlite3"
+FAILED_FILE = "crime.failed.json"
+FAILED_RETRY_SECONDS = 7 * 24 * 3600
+CODE_COLUMN_PREFIX = "CODGEO_"
 
 # Indicator label in the file -> reported key.
 INDICATORS = {
@@ -35,30 +40,58 @@ RATE_BASE = {"burglary": "dwellings"}
 DEFAULT_RATE_BASE = "inhabitants"
 
 
+class IndexBuildError(RuntimeError):
+    """A file that already failed to index, not downloaded again until the retry delay passes."""
+
+
 def fetch(code: str) -> dict:
     """Return, per retained indicator, the count and rate of the latest year for INSEE ``code``.
 
-    ``rate_per_mille`` is per 1,000 of ``rate_base`` (``dwellings`` or ``inhabitants``).
+    ``rate_per_mille`` is per 1,000 of ``rate_base`` (``dwellings`` or ``inhabitants``),
+    ``None`` when the ministry publishes no rate (a town without population).
     ``rate_change_points`` is the latest rate minus the rate ``CHANGE_YEARS`` earlier,
     in per-mille points, ``None`` when either is missing or masked. A ``masked`` value
     is withheld by the ministry (statistical secrecy): its count and rate are ``None``.
     The file is downloaded once into the cache directory and indexed; it is fetched
-    again only when the catalog points to another file.
+    again only when the catalog points to another file. When the catalog cannot be
+    read or the current file cannot be indexed, the cached index is used and the
+    result carries ``stale: True`` and ``stale_reason``; with no cached index, the
+    error is raised.
     """
-    url = resolve_url()
-    index = ensure_index(url, cache_dir())
+    index, url, stale_reason = current_index(cache_dir())
     with closing(sqlite3.connect(index)) as db:
         year = int(db.execute("SELECT value FROM meta WHERE key = 'year'").fetchone()[0])
         rows = db.execute(
             "SELECT year, indicator, count, rate, masked FROM rows WHERE code = ?", (code,)
         ).fetchall()
-    return {
+    result = {
         "source": DATASET,
         "file": url,
         "year": year,
         "base_year": year - CHANGE_YEARS,
         "indicators": summarize(rows, year),
     }
+    if stale_reason:
+        result["stale"] = True
+        result["stale_reason"] = stale_reason
+    return result
+
+
+def current_index(directory: Path) -> tuple[Path, str, Optional[str]]:
+    """Return ``(index, source url, stale reason)``, refreshing the index from the catalog.
+
+    The stale reason is ``None`` when the index matches the catalog. Re-raises the
+    refresh error when no cached index is usable.
+    """
+    index = directory / INDEX_FILE
+    try:
+        url = resolve_url()
+        return ensure_index(url, directory), url, None
+    except Exception as error:
+        cached_url = _indexed_url(index) if index.exists() else None
+        if cached_url is None:
+            raise
+        return index, cached_url, f"{type(error).__name__}: {error}"
 
 
 def resolve_url() -> str:
@@ -89,10 +122,21 @@ def cache_dir() -> Path:
 
 
 def ensure_index(url: str, directory: Path) -> Path:
-    """Return the index of ``url`` in ``directory``, downloading and building it if missing or stale."""
+    """Return the index of ``url`` in ``directory``, downloading and building it if missing or stale.
+
+    A file that fails to index is recorded in ``FAILED_FILE``; for ``FAILED_RETRY_SECONDS``
+    afterwards it raises ``IndexBuildError`` instead of being downloaded again. A failed
+    download is not recorded.
+    """
     index = directory / INDEX_FILE
     if index.exists() and _indexed_url(index) == url:
         return index
+    failure = _recorded_failure(directory, url)
+    if failure:
+        raise IndexBuildError(
+            f"{url} failed to index ({failure}); retried after {FAILED_RETRY_SECONDS // 86400} days"
+            f" or once {directory / FAILED_FILE} is deleted"
+        )
     directory.mkdir(parents=True, exist_ok=True)
     archive = directory / "crime.csv.gz.part"
     staging = directory / (INDEX_FILE + ".part")
@@ -100,8 +144,13 @@ def ensure_index(url: str, directory: Path) -> Path:
         net.download(url, str(archive), timeout=DOWNLOAD_TIMEOUT_SECONDS)
         if staging.exists():
             staging.unlink()
-        build_index(archive, staging, url)
+        try:
+            build_index(archive, staging, url)
+        except Exception as error:
+            _record_failure(directory, url, error)
+            raise
         os.replace(staging, index)
+        (directory / FAILED_FILE).unlink(missing_ok=True)
     finally:
         for leftover in (archive, staging):
             if leftover.exists():
@@ -138,13 +187,27 @@ def read_rows(archive: Path) -> Iterator[dict]:
     """Yield the parsed rows of the retained indicators from the gzipped CSV ``archive``."""
     with gzip.open(archive, "rb") as raw:
         reader = csv.DictReader(_decode(raw), delimiter=";")
+        code_column = find_code_column(reader.fieldnames or [])
         for row in reader:
-            parsed = parse_row(row)
+            parsed = parse_row(row, code_column)
             if parsed:
                 yield parsed
 
 
-def parse_row(row: dict) -> Optional[dict]:
+def find_code_column(fieldnames: list[str]) -> str:
+    """Return the commune code column, ``CODGEO_`` suffixed by the file's geography year.
+
+    Raises ``ValueError`` unless exactly one column carries that prefix.
+    """
+    columns = [name for name in fieldnames if name.startswith(CODE_COLUMN_PREFIX)]
+    if len(columns) != 1:
+        raise ValueError(
+            f"crime file needs exactly one {CODE_COLUMN_PREFIX}* column, found {columns or 'none'}"
+        )
+    return columns[0]
+
+
+def parse_row(row: dict, code_column: str) -> Optional[dict]:
     """Map one CSV row to the indexed fields; ``None`` for an indicator not retained."""
     key = INDICATORS.get(row.get("indicateur") or "")
     if key is None:
@@ -152,7 +215,7 @@ def parse_row(row: dict) -> Optional[dict]:
     masked = row.get("est_diffuse") != "diff"
     count = None if masked else _number(row.get("nombre"))
     return {
-        "code": row["CODGEO_2026"],
+        "code": row[code_column],
         "year": int(row["annee"]),
         "indicator": key,
         "count": None if count is None else int(count),
@@ -208,3 +271,22 @@ def _indexed_url(index: Path) -> Optional[str]:
     except sqlite3.Error:
         return None
     return row[0] if row else None
+
+
+def _recorded_failure(directory: Path, url: str) -> Optional[str]:
+    """Return the recorded build error of ``url`` if still within the retry delay, else ``None``."""
+    try:
+        record = json.loads((directory / FAILED_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(record, dict) or record.get("url") != url:
+        return None
+    if time.time() - float(record.get("at") or 0) > FAILED_RETRY_SECONDS:
+        return None
+    return str(record.get("error"))
+
+
+def _record_failure(directory: Path, url: str, error: Exception) -> None:
+    """Record that ``url`` failed to index with ``error``, at the current time."""
+    record = {"url": url, "error": f"{type(error).__name__}: {error}", "at": time.time()}
+    (directory / FAILED_FILE).write_text(json.dumps(record), encoding="utf-8")

@@ -873,8 +873,8 @@ def test_crime_failed_download_keeps_previous_index(crime_net, monkeypatch, crim
         raise requests.ConnectionError("static down")
 
     monkeypatch.setattr(net, "download", broken)
-    with pytest.raises(requests.ConnectionError):
-        crime.fetch("38185")
+    result = crime.fetch("38185")
+    assert result["stale"] is True and "static down" in result["stale_reason"]
     assert sorted(f.name for f in crime_cache.iterdir()) == [crime.INDEX_FILE]
     monkeypatch.setattr(net, "download", lambda *a, **k: pytest.fail("no download expected"))
     state["catalog"] = _catalog()
@@ -988,11 +988,11 @@ def test_crime_unreadable_index_is_rebuilt(crime_net, crime_cache):
     assert state["downloads"] == [CRIME_URL]
 
 
-def test_crime_file_without_retained_indicator_raises_and_leaves_nothing(crime_net, crime_cache):
+def test_crime_file_without_retained_indicator_raises_and_leaves_only_the_failure(crime_net, crime_cache):
     crime_net(lines=[CRIME_HEADER, _crime_line("38185", 2025, "Vols de véhicule", '"3"', '"0,5"')])
     with pytest.raises(ValueError):
         crime.fetch("38185")
-    assert list(crime_cache.iterdir()) == []
+    assert [f.name for f in crime_cache.iterdir()] == [crime.FAILED_FILE]
 
 
 class _FakeStream(_FakeResponse):
@@ -1065,3 +1065,110 @@ def test_render_text_states_crime_years(crime_net):
     text = compare_towns.render_text([town])
     assert "offences recorded in 2025" in text and "since 2020" in text
     assert "6 · 2.48‰ (+0.78 pts)" in text
+
+
+# --- optional numbers, geography vintage, stale cache ------------------------
+
+
+def _report_with(crime_result, rents_result=None):
+    return [{"query": "x", "code": "55039", "name": "Somewhere", "sources": {
+        "rents": rents_result or {"segments": {}}, "risks": {"risks": []},
+        "water": {"samples": 0, "last_sample_date": None},
+        "crime": crime_result, "fibre": {"ftth_share": None},
+    }}]
+
+
+def test_render_crime_diffused_count_without_rate():
+    result = {"indicators": {
+        "burglary": {"count": 0, "rate_per_mille": None, "masked": False, "rate_change_points": None},
+        "vandalism": {"count": None, "rate_per_mille": None, "masked": False, "rate_change_points": None},
+    }}
+    assert compare_towns._crime_cell(result, "burglary") == ["0 · no rate"]
+    assert compare_towns._crime_cell(result, "vandalism") == ["no count · no rate"]
+
+
+def test_render_text_town_with_zero_population(crime_net):
+    crime_net(lines=[CRIME_HEADER, _crime_line("55039", 2025, "Cambriolages de logement", '"0"', "NA")])
+    text = compare_towns.render_text(_report_with(crime.fetch("55039")))
+    assert "0 · no rate" in text
+
+
+def test_render_rent_without_interval_or_observations():
+    segment = {"rent_m2": 9.5, "low_m2": None, "high_m2": 12.0, "estimated_on": "maille", "observations": None}
+    assert compare_towns._rent_cell({"segments": {"apartment": segment}}, "apartment") == ["9.50", "maille"]
+    segment = dict(segment, estimated_on="commune")
+    assert compare_towns._rent_cell({"segments": {"apartment": segment}}, "apartment") == ["9.50"]
+
+
+def test_crime_code_column_follows_geography_vintage(crime_net):
+    header = CRIME_HEADER.replace("CODGEO_2026", "CODGEO_2027")
+    crime_net(lines=[header, _crime_line("38185", 2026, "Cambriolages de logement", '"5"', '"2,0"')])
+    assert crime.fetch("38185")["indicators"]["burglary"]["count"] == 5
+
+
+@pytest.mark.parametrize("header", [
+    CRIME_HEADER.replace("CODGEO_2026", "code_commune"),
+    CRIME_HEADER.replace("CODGEO_2026", "CODGEO_2026;CODGEO_2027"),
+])
+def test_crime_code_column_must_be_unique(crime_net, header):
+    crime_net(lines=[header, _crime_line("38185", 2025, "Cambriolages de logement", '"5"', '"2,0"')])
+    with pytest.raises(ValueError, match="CODGEO_"):
+        crime.fetch("38185")
+
+
+def test_crime_failed_build_is_not_downloaded_again(crime_net):
+    state = crime_net(lines=[CRIME_HEADER.replace("CODGEO_2026", "code_commune")])
+    with pytest.raises(ValueError):
+        crime.fetch("38185")
+    with pytest.raises(crime.IndexBuildError, match="CODGEO_"):
+        crime.fetch("38185")
+    assert state["downloads"] == [CRIME_URL]
+
+
+def test_crime_failed_build_is_retried_once_expired(crime_net, crime_cache, monkeypatch):
+    state = crime_net(lines=[CRIME_HEADER.replace("CODGEO_2026", "code_commune")])
+    with pytest.raises(ValueError):
+        crime.fetch("38185")
+    later = crime.time.time() + crime.FAILED_RETRY_SECONDS + 1
+    monkeypatch.setattr(crime.time, "time", lambda: later)
+    with pytest.raises(ValueError):
+        crime.fetch("38185")
+    assert state["downloads"] == [CRIME_URL, CRIME_URL]
+
+
+def test_crime_new_file_that_fails_to_build_keeps_cached_index(crime_net, monkeypatch):
+    state = crime_net()
+    crime.fetch("38185")
+    newer = CRIME_URL.replace("20260709", "20270110")
+    state["catalog"] = _catalog(newer)
+
+    def broken_file(url, path, timeout=None):
+        state["downloads"].append(url)
+        _gz(path, [CRIME_HEADER.replace("CODGEO_2026", "code_commune")], "utf-8")
+
+    monkeypatch.setattr(net, "download", broken_file)
+    for _ in range(2):
+        result = crime.fetch("38185")
+        assert result["stale"] is True and "CODGEO_" in result["stale_reason"]
+        assert result["file"] == CRIME_URL and result["indicators"]["burglary"]["count"] == 6
+    assert state["downloads"] == [CRIME_URL, newer]
+
+
+def test_crime_catalog_down_falls_back_to_cached_index(crime_net):
+    state = crime_net()
+    fresh = crime.fetch("38185")
+    assert "stale" not in fresh
+    state["catalog"] = requests.ConnectionError("catalog down")
+    result = crime.fetch("38185")
+    assert result["stale"] is True and "catalog down" in result["stale_reason"]
+    assert result["indicators"] == fresh["indicators"] and result["file"] == CRIME_URL
+    text = compare_towns.render_text(_report_with(result))
+    assert "catalog down" in text and "cached" in text
+
+
+def test_crime_catalog_down_without_cache_raises(crime_net, crime_cache):
+    state = crime_net()
+    state["catalog"] = requests.ConnectionError("catalog down")
+    with pytest.raises(requests.ConnectionError):
+        crime.fetch("38185")
+    assert not (crime_cache / crime.INDEX_FILE).exists()

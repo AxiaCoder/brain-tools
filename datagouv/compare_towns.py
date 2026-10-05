@@ -128,16 +128,21 @@ def _scope_lines(result: dict) -> list[str]:
 
 
 def _rent_cell(result: dict, segment: str) -> list[str]:
-    """Rent cell: value, interval, observations and estimation level."""
+    """Rent cell: value, interval, observations and estimation level, each when known."""
     if "error" in result:
         return [f"error ({result['error_type']}), see --json"]
     row = result["segments"].get(segment)
     if row is None or row["rent_m2"] is None:
         return ["no data"]
-    detail = f"n={row['observations']}"
-    if row["estimated_on"] != "commune":
-        detail += f", {row['estimated_on']}"
-    return [f"{row['rent_m2']:.2f} ({row['low_m2']:.2f}-{row['high_m2']:.2f})", detail]
+    value = f"{row['rent_m2']:.2f}"
+    if row["low_m2"] is not None and row["high_m2"] is not None:
+        value += f" ({row['low_m2']:.2f}-{row['high_m2']:.2f})"
+    details = []
+    if row["observations"] is not None:
+        details.append(f"n={row['observations']}")
+    if row["estimated_on"] not in (None, "commune"):
+        details.append(row["estimated_on"])
+    return [value, ", ".join(details)] if details else [value]
 
 
 def _risks_cell(result: dict) -> list[str]:
@@ -176,15 +181,19 @@ def _crime_header(report: list[dict]) -> list[str]:
     years = next((t["sources"]["crime"] for t in report if "year" in t["sources"]["crime"]), None)
     if years is None:
         return ["Crime: recorded offences (Ministère de l'Intérieur)."]
-    return [
+    lines = [
         f"Crime: offences recorded in {years['year']} (Ministère de l'Intérieur): count, rate",
         "  per 1,000 inhabitants (burglaries: per 1,000 dwellings), change of the rate",
         f"  in per-mille points since {years['base_year']}; 'masked' = withheld by the ministry.",
     ]
+    stale = next((t["sources"]["crime"] for t in report if t["sources"]["crime"].get("stale")), None)
+    if stale:
+        lines.append(f"  Using the cached file, refresh failed: {stale['stale_reason']}")
+    return lines
 
 
 def _crime_cell(result: dict, key: str) -> list[str]:
-    """Crime cell: count, rate per mille and its change, or ``masked``."""
+    """Crime cell: count, rate per mille and its change, or ``masked``; ``no rate`` when unpublished."""
     if "error" in result:
         return [f"error ({result['error_type']}), see --json"]
     row = result["indicators"].get(key)
@@ -192,9 +201,12 @@ def _crime_cell(result: dict, key: str) -> list[str]:
         return ["no data"]
     if row["masked"]:
         return ["masked"]
+    count = "no count" if row["count"] is None else row["count"]
+    if row["rate_per_mille"] is None:
+        return [f"{count} · no rate"]
     change = row["rate_change_points"]
     trend = "" if change is None else f" ({change:+.2f} pts)"
-    return [f"{row['count']} · {row['rate_per_mille']:.2f}‰{trend}"]
+    return [f"{count} · {row['rate_per_mille']:.2f}‰{trend}"]
 
 
 def _fibre_cell(result: dict) -> list[str]:
