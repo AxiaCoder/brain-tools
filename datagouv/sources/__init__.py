@@ -6,6 +6,6 @@
 * ``fetch(code: str) -> dict`` - INSEE code in, JSON-serializable dict out; raises on failure.
 """
 
-from datagouv.sources import crime, fibre, rents, risks, water
+from datagouv.sources import crime, fibre, rents, risks, transport, water
 
-SOURCES = [rents, risks, water, crime, fibre]
+SOURCES = [rents, risks, water, crime, fibre, transport]

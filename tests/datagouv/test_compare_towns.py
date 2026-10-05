@@ -5,8 +5,10 @@ import pytest
 import requests
 
 from datagouv import compare_towns, net, towns
-from datagouv.sources import crime, fibre, rents, risks, water
+from datagouv.sources import crime, fibre, rents, risks, transport, water
 from datagouv.towns import Town, TownResolutionError
+
+NO_TRANSPORT = {"modes": {mode: {"lines": [], "stops": []} for mode in transport.MODES}}
 
 LYON_ARRONDISSEMENTS = [
     {"code": f"6938{i}", "nom": f"Lyon {i}{'er' if i == 1 else 'e'} Arrondissement", "_score": 0.05}
@@ -88,11 +90,19 @@ def crime_cache(monkeypatch, tmp_path):
     return cache
 
 
+@pytest.fixture(autouse=True)
+def overpass_pauses(monkeypatch):
+    pauses = []
+    monkeypatch.setattr(transport.time, "sleep", pauses.append)
+    return pauses
+
+
 @pytest.fixture
 def fake_net(monkeypatch):
     def install(routes):
         fake = FakeNet(routes)
         monkeypatch.setattr(net, "get_json", fake)
+        monkeypatch.setattr(net, "post_json", fake)
         return fake
 
     return install
@@ -615,11 +625,14 @@ def test_every_source_failing_still_renders(fake_net):
         ]
     )
     [town] = compare_towns.compare(["Lyon 3e"])
-    assert {r["error_type"] for r in town["sources"].values()} == {"Timeout"}
+    errors = {name: r["error_type"] for name, r in town["sources"].items()}
+    assert errors.pop("transport") == "OverpassError"
+    assert set(errors.values()) == {"Timeout"}
     text = compare_towns.render_text([town])
     assert text.count("error (Timeout)") == (
         len(compare_towns.RENT_SEGMENTS) + 4 + len(compare_towns.CRIME_INDICATORS) + 1
     )
+    assert text.count("error (OverpassError)") == len(compare_towns.TRANSPORT_MODES)
 
 
 def test_one_unresolved_town_stops_before_any_source_call(fake_net):
@@ -639,7 +652,7 @@ def test_render_empty_results_and_verdict_labels():
                 "risks": {"risks": []},
                 "water": {"samples": 0, "last_sample_date": None},
                 "crime": {"indicators": {}},
-                "fibre": {"ftth_share": None},
+                "fibre": {"ftth_share": None}, "transport": NO_TRANSPORT,
             },
         },
         {
@@ -665,7 +678,7 @@ def test_render_empty_results_and_verdict_labels():
                     "physico_chemical": {"derogation": 4},
                 },
                 "crime": {"indicators": {}},
-                "fibre": {"ftth_share": None},
+                "fibre": {"ftth_share": None}, "transport": NO_TRANSPORT,
             },
         },
     ]
@@ -1060,7 +1073,7 @@ def test_render_text_states_crime_years(crime_net):
     town = {"query": "x", "code": "38185", "name": "Grenoble", "sources": {
         "rents": {"segments": {}}, "risks": {"risks": []},
         "water": {"samples": 0, "last_sample_date": None},
-        "crime": crime.fetch("38185"), "fibre": {"ftth_share": None},
+        "crime": crime.fetch("38185"), "fibre": {"ftth_share": None}, "transport": NO_TRANSPORT,
     }}
     text = compare_towns.render_text([town])
     assert "offences recorded in 2025" in text and "since 2020" in text
@@ -1074,7 +1087,7 @@ def _report_with(crime_result, rents_result=None):
     return [{"query": "x", "code": "55039", "name": "Somewhere", "sources": {
         "rents": rents_result or {"segments": {}}, "risks": {"risks": []},
         "water": {"samples": 0, "last_sample_date": None},
-        "crime": crime_result, "fibre": {"ftth_share": None},
+        "crime": crime_result, "fibre": {"ftth_share": None}, "transport": NO_TRANSPORT,
     }}]
 
 
@@ -1172,3 +1185,170 @@ def test_crime_catalog_down_without_cache_raises(crime_net, crime_cache):
     with pytest.raises(requests.ConnectionError):
         crime.fetch("38185")
     assert not (crime_cache / crime.INDEX_FILE).exists()
+
+
+# --- transport --------------------------------------------------------------
+
+
+def _node(**tags):
+    return {"type": "node", "id": 1, "tags": tags}
+
+
+def _route(route, ref=None, name=None, **tags):
+    tags = dict(tags, type="route", route=route)
+    if ref:
+        tags["ref"] = ref
+    if name:
+        tags["name"] = name
+    return {"type": "relation", "id": 1, "tags": tags}
+
+
+OVERPASS = {
+    "elements": [
+        {"type": "area", "id": 3600000001},
+        _node(railway="station", station="subway", name="Saxe - Gambetta"),
+        _node(railway="stop", station="subway", name="Saxe - Gambetta"),
+        _node(railway="station", station="subway", name="Garibaldi"),
+        _node(railway="tram_stop", name="Liberté"),
+        _node(railway="tram_stop", name="Liberté"),
+        _node(railway="tram_stop"),
+        _node(highway="bus_stop", name="Garibaldi"),
+        _node(highway="bus_stop", name="Garibaldi"),
+        _node(highway="bus_stop", name="Part-Dieu"),
+        _node(railway="station", train="yes", name="Lyon Part-Dieu"),
+        _node(railway="halt", name="Jean Macé"),
+        _route("subway", "D", "Ligne D : Vaise ⇒ Vénissieux"),
+        _route("subway", "D", "Ligne D : Vénissieux ⇒ Vaise"),
+        _route("subway", "B"),
+        _route("tram", "T1"),
+        _route("tram", "T1"),
+        _route("light_rail", name="Rhônexpress"),
+        _route("bus", "C9"),
+        _route("trolleybus", "C3"),
+        _route("bus", "10"),
+        _route("bus", "2"),
+        _route("bus"),
+        _route("train", "TER 01", service="regional"),
+        _route("train", "TER 01", service="regional"),
+        _route("train", "A", network="RER"),
+        _route("train", "6821", network="TGV InOui", service="national"),
+        _route("train", "9241", network="TGV"),
+        _route("ferry", "F1"),
+    ]
+}
+
+
+def test_transport_counts_lines_by_ref_and_stops_by_name(fake_net):
+    fake = fake_net([(transport.ENDPOINTS[0], lambda u, p: OVERPASS)])
+    result = transport.fetch("69383")
+    modes = result["modes"]
+    assert list(modes) == ["subway", "tram", "bus", "train"]
+    assert modes["subway"] == {"lines": ["B", "D"], "stops": ["Garibaldi", "Saxe - Gambetta"]}
+    assert modes["tram"] == {"lines": ["Rhônexpress", "T1"], "stops": ["Liberté"]}
+    assert modes["bus"] == {"lines": ["2", "10", "C3", "C9"], "stops": ["Garibaldi", "Part-Dieu"]}
+    assert modes["train"] == {"lines": ["A", "TER 01"], "stops": ["Jean Macé", "Lyon Part-Dieu"]}
+    assert result["endpoint"] == transport.ENDPOINTS[0]
+    assert "OpenStreetMap contributors" in result["attribution"]
+    [(url, params)] = fake.calls
+    assert '"ref:INSEE"="69383"' in params["data"]
+
+
+def test_transport_falls_back_to_the_next_endpoint(fake_net):
+    def answer(url, params):
+        if url == transport.ENDPOINTS[0]:
+            return _http_504()
+        if url == transport.ENDPOINTS[1]:
+            return {"elements": [], "remark": "runtime error: Query timed out"}
+        return OVERPASS
+
+    fake = fake_net([("https://", answer)])
+    result = transport.fetch("63113")
+    assert [url for url, _ in fake.calls] == transport.ENDPOINTS
+    assert result["endpoint"] == transport.ENDPOINTS[2]
+    assert result["modes"]["subway"]["lines"] == ["B", "D"]
+
+
+def test_transport_every_endpoint_failing_is_an_error_cell(fake_net):
+    fake_net([(towns.GEO_API, lambda u, p: LYON_ARRONDISSEMENTS), *_all_routes()[1:],
+              ("https://", lambda u, p: _http_504())])
+    [town] = compare_towns.compare(["Lyon 3e"])
+    result = town["sources"]["transport"]
+    assert result["error_type"] == "OverpassError"
+    assert all(endpoint in result["error"] for endpoint in transport.ENDPOINTS)
+    assert "scope" not in result
+    assert compare_towns._transport_cell(result, "subway") == ["error (OverpassError), see --json"]
+    assert "segments" in town["sources"]["rents"]
+
+
+def test_transport_unknown_boundary_is_an_error(fake_net):
+    fake_net([(transport.ENDPOINTS[0], lambda u, p: {"elements": []})])
+    with pytest.raises(transport.OverpassError, match="ref:INSEE=99999"):
+        transport.fetch("99999")
+
+
+def test_transport_arrondissement_is_queried_with_its_own_code(fake_net):
+    fake = fake_net([(towns.GEO_API, lambda u, p: LYON_ARRONDISSEMENTS), *_all_routes()[1:],
+                     (transport.ENDPOINTS[0], lambda u, p: OVERPASS)])
+    [town] = compare_towns.compare(["Lyon 3e"])
+    [data] = [p["data"] for u, p in fake.calls if u == transport.ENDPOINTS[0]]
+    assert '"ref:INSEE"="69383"' in data
+    assert "scope" not in town["sources"]["transport"]
+
+
+def test_render_transport_cells():
+    result = {"modes": {
+        "subway": {"lines": ["B", "D"], "stops": [f"S{i}" for i in range(9)]},
+        "tram": {"lines": ["A"], "stops": ["Jaude"]},
+        "bus": {"lines": ["1", "2"], "stops": ["Gare", "Jaude"]},
+        "train": {"lines": [], "stops": []},
+    }}
+    assert compare_towns._transport_cell(result, "subway") == ["2 lines: B, D", "9 stations"]
+    assert compare_towns._transport_cell(result, "tram") == ["1 line: A", "1 stop: Jaude"]
+    assert compare_towns._transport_cell(result, "bus") == ["2 lines", "2 stops"]
+    assert compare_towns._transport_cell(result, "train") == ["none"]
+    text = compare_towns.render_text(_report_with({"indicators": {}}))
+    assert "© OpenStreetMap contributors" in text and "Transport, metro" in text
+
+
+def _http_504():
+    response = requests.Response()
+    response.status_code = 504
+    return requests.HTTPError("504 Server Error: Gateway Timeout", response=response)
+
+
+def test_post_json_sends_form_timeout_and_user_agent(monkeypatch):
+    seen = {}
+
+    def fake_post(url, data=None, timeout=None, headers=None):
+        seen.update(url=url, data=data, timeout=timeout, headers=headers)
+        return _FakeResponse(200, {"ok": True})
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    assert net.post_json("https://x.test/a", {"data": "q"}, timeout=5) == {"ok": True}
+    assert seen == {"url": "https://x.test/a", "data": {"data": "q"}, "timeout": 5,
+                    "headers": {"User-Agent": net.USER_AGENT}}
+
+
+def test_transport_retries_busy_endpoints_once_after_a_pause(fake_net, overpass_pauses):
+    answers = {transport.ENDPOINTS[0]: [_http_504(), OVERPASS]}
+
+    def answer(url, params):
+        if url in answers:
+            return answers[url].pop(0)
+        return requests.ReadTimeout("slow")
+
+    fake = fake_net([("https://", answer)])
+    result = transport.fetch("38185")
+    assert [url for url, _ in fake.calls] == [*transport.ENDPOINTS, transport.ENDPOINTS[0]]
+    assert overpass_pauses == [transport.RETRY_PAUSE_SECONDS]
+    assert result["endpoint"] == transport.ENDPOINTS[0]
+
+
+def test_transport_gives_up_after_the_second_pass(fake_net, overpass_pauses):
+    slow = transport.ENDPOINTS[1]
+    fake = fake_net([(slow, lambda u, p: requests.ReadTimeout("slow")), ("https://", lambda u, p: _http_504())])
+    with pytest.raises(transport.OverpassError):
+        transport.fetch("38185")
+    retried = [url for url in transport.ENDPOINTS if url != slow]
+    assert [url for url, _ in fake.calls] == [*transport.ENDPOINTS, *retried]
+    assert overpass_pauses == [transport.RETRY_PAUSE_SECONDS]

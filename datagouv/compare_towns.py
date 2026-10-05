@@ -13,7 +13,7 @@ import textwrap
 
 import requests
 
-from datagouv.sources import SOURCES, rents
+from datagouv.sources import SOURCES, rents, transport
 from datagouv.towns import Town, TownResolutionError, resolve
 
 CELL_WIDTH = 34
@@ -32,6 +32,13 @@ CRIME_INDICATORS = {
     "assault_outside_family": "Crime, assault",
     "vandalism": "Crime, vandalism",
 }
+TRANSPORT_MODES = {
+    "subway": ("Transport, metro", "station"),
+    "tram": ("Transport, tram", "stop"),
+    "bus": ("Transport, bus", "stop"),
+    "train": ("Transport, train", "station"),
+}
+TRANSPORT_LISTED_NAMES = 8
 
 
 def collect(town: Town) -> dict:
@@ -89,6 +96,8 @@ def render_text(report: list[dict]) -> str:
     for key, label in CRIME_INDICATORS.items():
         rows.append((label, [_crime_cell(t["sources"]["crime"], key) for t in report]))
     rows.append(("Fibre (FTTH)", [_fibre_cell(t["sources"]["fibre"]) for t in report]))
+    for mode, (label, _) in TRANSPORT_MODES.items():
+        rows.append((label, [_transport_cell(t["sources"]["transport"], mode) for t in report]))
 
     label_width = max(len(label) for label, _ in rows)
     lines = [
@@ -98,6 +107,8 @@ def render_text(report: list[dict]) -> str:
         "Water: compliance of the latest distinct samples (Hub'Eau).",
         *_crime_header(report),
         "Fibre: share of premises that can be connected to FTTH (ANCT).",
+        "Transport: lines with a stop in the town, distinct stops by name; trains: regional",
+        f"  and commuter lines, stations and halts. Data {transport.ATTRIBUTION}.",
         "",
     ]
     separator = "-" * (label_width + (CELL_WIDTH + 3) * len(report))
@@ -221,6 +232,32 @@ def _fibre_cell(result: dict) -> list[str]:
     ]
 
 
+def _transport_cell(result: dict, mode: str) -> list[str]:
+    """Transport cell: line count, stop count, and their names when few enough.
+
+    Line refs are listed for every mode but bus, stop names for metro, tram and
+    train; either only up to ``TRANSPORT_LISTED_NAMES`` names.
+    """
+    if "error" in result:
+        return [f"error ({result['error_type']}), see --json"]
+    row = result["modes"][mode]
+    if not row["lines"] and not row["stops"]:
+        return ["none"]
+    _, stop_word = TRANSPORT_MODES[mode]
+    return [
+        _counted(row["lines"], "line", mode != "bus"),
+        _counted(row["stops"], stop_word, mode != "bus"),
+    ]
+
+
+def _counted(names: list[str], word: str, listed: bool) -> str:
+    """``3 lines: A, B, C``; the names are dropped when not ``listed`` or too many."""
+    text = f"{len(names)} {word}{'' if len(names) == 1 else 's'}"
+    if listed and 0 < len(names) <= TRANSPORT_LISTED_NAMES:
+        text += ": " + ", ".join(names)
+    return text
+
+
 def main(argv=None) -> int:
     """CLI entry point; returns the process exit code.
 
@@ -228,7 +265,7 @@ def main(argv=None) -> int:
     """
     parser = argparse.ArgumentParser(
         prog="python -m datagouv.compare_towns",
-        description="Compare French towns on rents, risks, tap water, crime and fibre (public open data).",
+        description="Compare French towns on rents, risks, tap water, crime, fibre and public transport (open data).",
     )
     parser.add_argument("towns", nargs="+", help="commune or arrondissement name, or INSEE code, not postal code")
     parser.add_argument("--json", action="store_true", help="print JSON instead of a table")
