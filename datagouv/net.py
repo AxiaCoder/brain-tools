@@ -21,6 +21,19 @@ def get_json(url: str, params: Optional[dict] = None, timeout: float = TIMEOUT_S
     return response.json()
 
 
+def post_json(url: str, data: dict, timeout: float = TIMEOUT_SECONDS) -> Any:
+    """POST ``data`` form-encoded to ``url`` and return the decoded JSON body; ``timeout`` in seconds.
+
+    Raises ``requests.HTTPError`` on a non-2xx status, ``requests.RequestException``
+    on any transport failure and ``ValueError`` when the body is not JSON.
+    """
+    response = requests.post(
+        url, data=data, timeout=timeout, headers={"User-Agent": USER_AGENT}
+    )
+    response.raise_for_status()
+    return response.json()
+
+
 def download(url: str, path: str, timeout: float = 60) -> None:
     """Stream ``url`` into the file ``path``, overwriting it; ``timeout`` in seconds per read.
 

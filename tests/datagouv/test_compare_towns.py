@@ -5,8 +5,10 @@ import pytest
 import requests
 
 from datagouv import compare_towns, net, towns
-from datagouv.sources import crime, fibre, rents, risks, water
+from datagouv.sources import crime, fibre, rents, risks, transport, water
 from datagouv.towns import Town, TownResolutionError
+
+NO_TRANSPORT = {"modes": {mode: {"lines": [], "stops": []} for mode in transport.MODES}}
 
 LYON_ARRONDISSEMENTS = [
     {"code": f"6938{i}", "nom": f"Lyon {i}{'er' if i == 1 else 'e'} Arrondissement", "_score": 0.05}
@@ -88,11 +90,19 @@ def crime_cache(monkeypatch, tmp_path):
     return cache
 
 
+@pytest.fixture(autouse=True)
+def overpass_pauses(monkeypatch):
+    pauses = []
+    monkeypatch.setattr(transport.time, "sleep", pauses.append)
+    return pauses
+
+
 @pytest.fixture
 def fake_net(monkeypatch):
     def install(routes):
         fake = FakeNet(routes)
         monkeypatch.setattr(net, "get_json", fake)
+        monkeypatch.setattr(net, "post_json", fake)
         return fake
 
     return install
@@ -615,11 +625,14 @@ def test_every_source_failing_still_renders(fake_net):
         ]
     )
     [town] = compare_towns.compare(["Lyon 3e"])
-    assert {r["error_type"] for r in town["sources"].values()} == {"Timeout"}
+    errors = {name: r["error_type"] for name, r in town["sources"].items()}
+    assert errors.pop("transport") == "OverpassError"
+    assert set(errors.values()) == {"Timeout"}
     text = compare_towns.render_text([town])
     assert text.count("error (Timeout)") == (
         len(compare_towns.RENT_SEGMENTS) + 4 + len(compare_towns.CRIME_INDICATORS) + 1
     )
+    assert text.count("error (OverpassError)") == len(compare_towns.TRANSPORT_MODES)
 
 
 def test_one_unresolved_town_stops_before_any_source_call(fake_net):
@@ -639,7 +652,7 @@ def test_render_empty_results_and_verdict_labels():
                 "risks": {"risks": []},
                 "water": {"samples": 0, "last_sample_date": None},
                 "crime": {"indicators": {}},
-                "fibre": {"ftth_share": None},
+                "fibre": {"ftth_share": None}, "transport": NO_TRANSPORT,
             },
         },
         {
@@ -665,7 +678,7 @@ def test_render_empty_results_and_verdict_labels():
                     "physico_chemical": {"derogation": 4},
                 },
                 "crime": {"indicators": {}},
-                "fibre": {"ftth_share": None},
+                "fibre": {"ftth_share": None}, "transport": NO_TRANSPORT,
             },
         },
     ]
@@ -1060,7 +1073,7 @@ def test_render_text_states_crime_years(crime_net):
     town = {"query": "x", "code": "38185", "name": "Grenoble", "sources": {
         "rents": {"segments": {}}, "risks": {"risks": []},
         "water": {"samples": 0, "last_sample_date": None},
-        "crime": crime.fetch("38185"), "fibre": {"ftth_share": None},
+        "crime": crime.fetch("38185"), "fibre": {"ftth_share": None}, "transport": NO_TRANSPORT,
     }}
     text = compare_towns.render_text([town])
     assert "offences recorded in 2025" in text and "since 2020" in text
@@ -1074,7 +1087,7 @@ def _report_with(crime_result, rents_result=None):
     return [{"query": "x", "code": "55039", "name": "Somewhere", "sources": {
         "rents": rents_result or {"segments": {}}, "risks": {"risks": []},
         "water": {"samples": 0, "last_sample_date": None},
-        "crime": crime_result, "fibre": {"ftth_share": None},
+        "crime": crime_result, "fibre": {"ftth_share": None}, "transport": NO_TRANSPORT,
     }}]
 
 
@@ -1172,3 +1185,559 @@ def test_crime_catalog_down_without_cache_raises(crime_net, crime_cache):
     with pytest.raises(requests.ConnectionError):
         crime.fetch("38185")
     assert not (crime_cache / crime.INDEX_FILE).exists()
+
+
+# --- transport --------------------------------------------------------------
+
+
+def _node(**tags):
+    return {"type": "node", "id": 1, "tags": tags}
+
+
+def _route(route, ref=None, name=None, **tags):
+    tags = dict(tags, type="route", route=route)
+    if ref:
+        tags["ref"] = ref
+    if name:
+        tags["name"] = name
+    return {"type": "relation", "id": 1, "tags": tags}
+
+
+OVERPASS = {
+    "elements": [
+        {"type": "area", "id": 3600000001},
+        _node(railway="station", station="subway", name="Saxe - Gambetta"),
+        _node(railway="stop", station="subway", name="Saxe - Gambetta"),
+        _node(railway="station", station="subway", name="Garibaldi"),
+        _node(railway="tram_stop", name="Liberté"),
+        _node(railway="tram_stop", name="Liberté"),
+        _node(railway="tram_stop"),
+        _node(highway="bus_stop", name="Garibaldi"),
+        _node(highway="bus_stop", name="Garibaldi"),
+        _node(highway="bus_stop", name="Part-Dieu"),
+        _node(railway="station", train="yes", name="Lyon Part-Dieu"),
+        _node(railway="halt", name="Jean Macé"),
+        _route("subway", "D", "Ligne D : Vaise ⇒ Vénissieux"),
+        _route("subway", "D", "Ligne D : Vénissieux ⇒ Vaise"),
+        _route("subway", "B"),
+        _route("tram", "T1"),
+        _route("tram", "T1"),
+        _route("light_rail", name="Rhônexpress"),
+        _route("bus", "C9"),
+        _route("trolleybus", "C3"),
+        _route("bus", "10"),
+        _route("bus", "2"),
+        _route("bus"),
+        _route("train", "TER 01", service="regional"),
+        _route("train", "TER 01", service="regional"),
+        _route("train", "A", network="RER"),
+        _route("train", "6821", network="TGV InOui", service="national"),
+        _route("train", "9241", network="TGV"),
+        _route("ferry", "F1"),
+    ]
+}
+
+
+def test_transport_counts_lines_by_ref_and_stops_by_name(fake_net):
+    fake = fake_net([(transport.ENDPOINTS[0], lambda u, p: OVERPASS)])
+    result = transport.fetch("69383")
+    modes = result["modes"]
+    assert list(modes) == ["subway", "tram", "bus", "train"]
+    assert modes["subway"] == {"lines": ["B", "D"], "stops": ["Garibaldi", "Saxe - Gambetta"]}
+    assert modes["tram"] == {"lines": ["Rhônexpress", "T1"], "stops": ["Liberté"]}
+    assert modes["bus"] == {"lines": ["2", "10", "C3", "C9"], "stops": ["Garibaldi", "Part-Dieu"]}
+    assert modes["train"] == {"lines": ["A", "TER 01"], "stops": ["Jean Macé", "Lyon Part-Dieu"]}
+    assert result["endpoint"] == transport.ENDPOINTS[0]
+    assert "OpenStreetMap contributors" in result["attribution"]
+    [(url, params)] = fake.calls
+    assert '"ref:INSEE"="69383"' in params["data"]
+
+
+def test_transport_falls_back_to_the_next_endpoint(fake_net):
+    def answer(url, params):
+        if url == transport.ENDPOINTS[0]:
+            return _http_504()
+        if url == transport.ENDPOINTS[1]:
+            return {"elements": [], "remark": "runtime error: Query timed out"}
+        return OVERPASS
+
+    fake = fake_net([("https://", answer)])
+    result = transport.fetch("63113")
+    assert [url for url, _ in fake.calls] == transport.ENDPOINTS
+    assert result["endpoint"] == transport.ENDPOINTS[2]
+    assert result["modes"]["subway"]["lines"] == ["B", "D"]
+
+
+def test_transport_every_endpoint_failing_is_an_error_cell(fake_net):
+    fake_net([(towns.GEO_API, lambda u, p: LYON_ARRONDISSEMENTS), *_all_routes()[1:],
+              ("https://", lambda u, p: _http_504())])
+    [town] = compare_towns.compare(["Lyon 3e"])
+    result = town["sources"]["transport"]
+    assert result["error_type"] == "OverpassError"
+    assert all(endpoint in result["error"] for endpoint in transport.ENDPOINTS)
+    assert "scope" not in result
+    assert compare_towns._transport_cell(result, "subway") == ["error (OverpassError), see --json"]
+    assert "segments" in town["sources"]["rents"]
+
+
+def test_transport_unknown_boundary_is_an_error(fake_net):
+    fake_net([(transport.ENDPOINTS[0], lambda u, p: {"elements": []})])
+    with pytest.raises(transport.OverpassError, match="ref:INSEE=99999"):
+        transport.fetch("99999")
+
+
+def test_transport_arrondissement_is_queried_with_its_own_code(fake_net):
+    fake = fake_net([(towns.GEO_API, lambda u, p: LYON_ARRONDISSEMENTS), *_all_routes()[1:],
+                     (transport.ENDPOINTS[0], lambda u, p: OVERPASS)])
+    [town] = compare_towns.compare(["Lyon 3e"])
+    [data] = [p["data"] for u, p in fake.calls if u == transport.ENDPOINTS[0]]
+    assert '"ref:INSEE"="69383"' in data
+    assert "scope" not in town["sources"]["transport"]
+
+
+def test_render_transport_cells():
+    result = {"modes": {
+        "subway": {"lines": ["B", "D"], "stops": [f"S{i}" for i in range(9)]},
+        "tram": {"lines": ["A"], "stops": ["Jaude"]},
+        "bus": {"lines": ["1", "2"], "stops": ["Gare", "Jaude"]},
+        "train": {"lines": [], "stops": []},
+    }}
+    assert compare_towns._transport_cell(result, "subway") == ["2 lines: B, D", "9 stations"]
+    assert compare_towns._transport_cell(result, "tram") == ["1 line: A", "1 stop: Jaude"]
+    assert compare_towns._transport_cell(result, "bus") == ["2 lines", "2 stops"]
+    assert compare_towns._transport_cell(result, "train") == ["none"]
+    text = compare_towns.render_text(_report_with({"indicators": {}}))
+    assert "© OpenStreetMap contributors" in text and "Transport, metro" in text
+
+
+def _http_504():
+    response = requests.Response()
+    response.status_code = 504
+    return requests.HTTPError("504 Server Error: Gateway Timeout", response=response)
+
+
+def test_post_json_sends_form_timeout_and_user_agent(monkeypatch):
+    seen = {}
+
+    def fake_post(url, data=None, timeout=None, headers=None):
+        seen.update(url=url, data=data, timeout=timeout, headers=headers)
+        return _FakeResponse(200, {"ok": True})
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    assert net.post_json("https://x.test/a", {"data": "q"}, timeout=5) == {"ok": True}
+    assert seen == {"url": "https://x.test/a", "data": {"data": "q"}, "timeout": 5,
+                    "headers": {"User-Agent": net.USER_AGENT}}
+
+
+def test_transport_retries_busy_endpoints_once_after_a_pause(fake_net, overpass_pauses):
+    answers = {transport.ENDPOINTS[0]: [_http_504(), OVERPASS]}
+
+    def answer(url, params):
+        if url in answers:
+            return answers[url].pop(0)
+        return requests.ReadTimeout("slow")
+
+    fake = fake_net([("https://", answer)])
+    result = transport.fetch("38185")
+    assert [url for url, _ in fake.calls] == [*transport.ENDPOINTS, transport.ENDPOINTS[0]]
+    assert overpass_pauses == [transport.RETRY_PAUSE_SECONDS]
+    assert result["endpoint"] == transport.ENDPOINTS[0]
+
+
+def test_transport_gives_up_after_the_second_pass(fake_net, overpass_pauses):
+    slow = transport.ENDPOINTS[1]
+    fake = fake_net([(slow, lambda u, p: requests.ReadTimeout("slow")), ("https://", lambda u, p: _http_504())])
+    with pytest.raises(transport.OverpassError):
+        transport.fetch("38185")
+    retried = [url for url in transport.ENDPOINTS if url != slow]
+    assert [url for url, _ in fake.calls] == [*transport.ENDPOINTS, *retried]
+    assert overpass_pauses == [transport.RETRY_PAUSE_SECONDS]
+
+
+def test_post_json_raises_on_http_error(monkeypatch):
+    monkeypatch.setattr(requests, "post", lambda *a, **k: _FakeResponse(429, None))
+    with pytest.raises(requests.HTTPError):
+        net.post_json("https://x.test/busy", {"data": "q"})
+
+
+@pytest.mark.parametrize("tags, mode", [
+    ({"route": "train", "service": "regional"}, "train"),
+    ({"route": "train", "service": "commuter"}, "train"),
+    ({"route": "train", "service": "suburban"}, "train"),
+    ({"route": "train", "network": "TER Auvergne-Rhône-Alpes"}, "train"),
+    ({"route": "train", "network": "RER"}, "train"),
+    ({"route": "train", "network": "Transilien"}, "train"),
+    ({"route": "train", "service": "long_distance", "network": "Intercités"}, None),
+    ({"route": "train", "network": "TERRA"}, None),
+    ({"route": "train"}, None),
+    ({"route": "light_rail"}, "tram"),
+    ({"route": "trolleybus"}, "bus"),
+    ({"route": "ferry"}, None),
+    ({}, None),
+])
+def test_route_mode_keeps_regional_trains_and_groups_modes(tags, mode):
+    assert transport.route_mode(tags) == mode
+
+
+@pytest.mark.parametrize("tags, mode", [
+    ({"railway": "station", "station": "subway"}, "subway"),
+    ({"railway": "tram_stop"}, "tram"),
+    ({"railway": "station", "station": "light_rail"}, "tram"),
+    ({"railway": "station", "station": "tram"}, "tram"),
+    ({"highway": "bus_stop"}, "bus"),
+    ({"railway": "station"}, "train"),
+    ({"railway": "station", "station": "train"}, "train"),
+    ({"railway": "halt"}, "train"),
+    ({"railway": "station", "station": "funicular"}, None),
+    ({"railway": "stop"}, None),
+    ({}, None),
+])
+def test_stop_mode_classifies_stop_nodes(tags, mode):
+    assert transport.stop_mode(tags) == mode
+
+
+def test_natural_key_orders_digit_runs_as_numbers():
+    assert sorted(["T10", "T2", "B", "10", "2", "C3"], key=transport.natural_key) == [
+        "2", "10", "B", "C3", "T2", "T10"
+    ]
+
+
+def test_transport_harmless_remark_is_accepted(fake_net):
+    body = dict(OVERPASS, remark="runtime remark: Timeout is unused")
+    fake = fake_net([("https://", lambda u, p: body)])
+    assert transport.fetch("69383")["endpoint"] == transport.ENDPOINTS[0]
+    assert len(fake.calls) == 1
+
+
+def test_transport_non_json_body_falls_back(fake_net):
+    def answer(url, params):
+        if url == transport.ENDPOINTS[0]:
+            return ValueError("Expecting value: line 1 column 1 (char 0)")
+        return OVERPASS
+
+    fake = fake_net([("https://", answer)])
+    assert transport.fetch("69383")["endpoint"] == transport.ENDPOINTS[1]
+    assert len(fake.calls) == 2
+
+
+def test_transport_timeouts_only_are_not_retried(fake_net, overpass_pauses):
+    fake = fake_net([("https://", lambda u, p: requests.ReadTimeout("slow"))])
+    with pytest.raises(transport.OverpassError, match="ReadTimeout"):
+        transport.fetch("69383")
+    assert [url for url, _ in fake.calls] == transport.ENDPOINTS
+    assert overpass_pauses == []
+
+
+def test_render_transport_name_threshold_is_inclusive():
+    eight = [f"S{i}" for i in range(compare_towns.TRANSPORT_LISTED_NAMES)]
+    result = {"modes": {"train": {"lines": [], "stops": eight}, "bus": {"lines": ["1"], "stops": ["Gare"]}}}
+    assert compare_towns._transport_cell(result, "train") == ["0 lines", "8 stations: " + ", ".join(eight)]
+    assert compare_towns._transport_cell(result, "bus") == ["1 line", "1 stop"]
+
+
+def test_render_text_empty_transport_says_none():
+    text = compare_towns.render_text(_report_with({"indicators": {}}))
+    rows = [line for line in text.splitlines() if line.startswith("Transport, ")]
+    assert len(rows) == len(compare_towns.TRANSPORT_MODES)
+    assert all("none" in row for row in rows)
+
+
+def test_summarize_ignores_stops_with_an_empty_name():
+    modes = transport.summarize([_node(highway="bus_stop", name=""), _node(highway="bus_stop", name="Gare")])
+    assert modes["bus"]["stops"] == ["Gare"]
+
+
+# --- transport: distinct lines, long-distance trains, station ways ----------
+
+
+def _rel(rel_id, **tags):
+    return {"type": "relation", "id": rel_id, "tags": tags}
+
+
+def _master(rel_id, members, **tags):
+    master = _rel(rel_id, type="route_master", **tags)
+    master["members"] = [{"type": "relation", "ref": member, "role": ""} for member in members]
+    return master
+
+
+def test_route_master_counts_its_directions_once_even_without_ref():
+    modes = transport.summarize([
+        _rel(1, type="route", route="train", network="TER Centre – Val de Loire", service="regional",
+             name="Rémi Express Paris → Les Aubrais → Tours"),
+        _rel(2, type="route", route="train", network="TER Centre – Val de Loire", service="regional",
+             name="Rémi Express Tours → Les Aubrais → Paris"),
+        _master(10, [1, 2], route_master="train", name="Rémi Express Paris ↔ Les Aubrais ↔ Tours"),
+    ])
+    assert modes["train"]["lines"] == ["Rémi Express Paris ↔ Les Aubrais ↔ Tours"]
+
+
+def test_route_master_ref_wins_over_variant_refs():
+    modes = transport.summarize([
+        _rel(1, type="route", route="train", network="TER Auvergne-Rhône-Alpes", ref="TER 60;TER 62"),
+        _rel(2, type="route", route="train", network="TER Auvergne-Rhône-Alpes", ref="TER 60"),
+        _rel(3, type="route", route="bus", ref="12"),
+        _rel(4, type="route", route="bus", ref="12/14"),
+        _master(10, [1, 2], route_master="train", ref="TER 60"),
+        _master(11, [3, 4], route_master="bus", ref="12"),
+    ])
+    assert modes["train"]["lines"] == ["TER 60"]
+    assert modes["bus"]["lines"] == ["12"]
+
+
+def test_route_ref_is_used_when_its_master_has_none():
+    modes = transport.summarize([
+        _rel(1, type="route", route="train", network="TER Centre – Val de Loire", ref="TER 4"),
+        _master(10, [1], route_master="train", name="TER 4 : Orléans ↔ Étampes ↔ Paris"),
+    ])
+    assert modes["train"]["lines"] == ["TER 4"]
+
+
+def test_multi_valued_ref_is_several_lines_not_one_more():
+    modes = transport.summarize([
+        _rel(1, type="route", route="train", network="TER Auvergne-Rhône-Alpes", ref="TER 60;TER 62"),
+        _rel(2, type="route", route="train", network="TER Auvergne-Rhône-Alpes", ref="TER 60"),
+        _rel(3, type="route", route="train", network="TER Auvergne-Rhône-Alpes", ref="TER 62"),
+    ])
+    assert modes["train"]["lines"] == ["TER 60", "TER 62"]
+
+
+def test_line_refs_ignore_leading_zeros_case_and_spacing():
+    modes = transport.summarize([
+        _rel(1, type="route", route="train", network="TER Bourgogne-Franche-Comté", ref="TER 07"),
+        _rel(2, type="route", route="train", network="TER Centre – Val de Loire", ref="TER 7"),
+        _rel(3, type="route", route="train", network="TER Centre – Val de Loire", ref="ter  7"),
+        _rel(4, type="route", route="bus", ref="C 3"),
+        _rel(5, type="route", route="bus", ref="C3"),
+        _rel(6, type="route", route="bus", ref="10"),
+        _rel(7, type="route", route="bus", ref="100"),
+    ])
+    assert modes["train"]["lines"] == ["TER 07"]
+    assert modes["bus"]["lines"] == ["10", "100", "C 3"]
+
+
+@pytest.mark.parametrize("tags", [
+    {"route": "train", "ref": "ICN 5790", "network": "TER Bourgogne-Franche-Comté"},
+    {"route": "train", "ref": "ICN 5790/91", "network": "TER Bourgogne-Franche-Comté"},
+    {"route": "train", "ref": "ICE 402", "network": "TER Centre – Val de Loire", "service": "national"},
+    {"route": "train", "ref": "IC 410", "network": "Intercités", "service": "national"},
+    {"route": "train", "ref": "190A", "network": "Intercités", "service": "regional"},
+    {"route": "train", "ref": "3731", "network": "Intercités", "service": "night"},
+    {"route": "train", "ref": "TGV 515", "network": "TGV", "service": "national"},
+    {"route": "train", "ref": "6821", "network": "TGV InOui"},
+    {"route": "train", "ref": "4071", "network": "Ouigo Train Classique", "service": "long_distance"},
+    {"route": "train", "ref": "Lyria", "network": "TGV Lyria"},
+    {"route": "train", "ref": "TER 1", "network": "TER Centre – Val de Loire", "service": "high_speed"},
+])
+def test_long_distance_trains_are_excluded_whatever_network_or_service(tags):
+    assert transport.route_mode(tags) is None
+
+
+@pytest.mark.parametrize("tags", [
+    {"route": "train", "ref": "TER 2", "network": "TER Centre – Val de Loire"},
+    {"route": "train", "ref": "TER 63", "network": "TER Auvergne-Rhône-Alpes"},
+    {"route": "train", "ref": "C", "network": "RER", "service": "commuter", "passenger": "suburban"},
+    {"route": "train", "name": "TER 1 Rémi Express : Tours - Paris", "network": "TER Centre – Val de Loire",
+     "service": "regional"},
+])
+def test_regional_trains_are_kept(tags):
+    assert transport.route_mode(tags) == "train"
+
+
+def test_stop_names_are_distinct_on_a_folded_form():
+    modes = transport.summarize([
+        _node(highway="bus_stop", name="Cité Jean Macé"),
+        _node(highway="bus_stop", name="Cité Jean-Macé"),
+        _node(highway="bus_stop", name="Foch - Ferrié"),
+        _node(highway="bus_stop", name="Foch - Férrié"),
+        _node(highway="bus_stop", name="foch  ferrie"),
+        _node(highway="bus_stop", name="Gare"),
+    ])
+    assert modes["bus"]["stops"] == ["Cité Jean Macé", "Foch - Ferrié", "Gare"]
+
+
+def test_stations_mapped_as_ways_or_relations_count():
+    modes = transport.summarize([
+        {"type": "way", "id": 1, "tags": {"railway": "station", "station": "subway", "name": "Vieux Port"}},
+        {"type": "relation", "id": 2, "tags": {"public_transport": "stop_area", "railway": "station",
+                                               "station": "subway", "name": "Castellane"}},
+        {"type": "way", "id": 3, "tags": {"railway": "station", "name": "Marseille Saint-Charles"}},
+        _node(railway="station", station="subway", name="Noailles"),
+    ])
+    assert modes["subway"]["stops"] == ["Castellane", "Noailles", "Vieux Port"]
+    assert modes["train"]["stops"] == ["Marseille Saint-Charles"]
+
+
+def test_transport_query_takes_station_ways_and_route_masters(fake_net):
+    fake = fake_net([(transport.ENDPOINTS[0], lambda u, p: {"elements": [
+        {"type": "area", "id": 3600000001},
+        {"type": "way", "id": 1, "tags": {"railway": "station", "station": "subway", "name": "Vieux Port"}},
+        _rel(5, type="route", route="subway", ref="M1", name="M1 : La Rose → La Fourragère"),
+        _rel(6, type="route", route="subway", ref="M1", name="M1 : La Fourragère → La Rose"),
+        _master(9, [5, 6], route_master="subway", ref="M1"),
+    ]})])
+    modes = transport.fetch("13201")["modes"]
+    assert modes["subway"] == {"lines": ["M1"], "stops": ["Vieux Port"]}
+    [(_, params)] = fake.calls
+    for selector in ('nwr(area.a)["station"="subway"]', 'nwr(area.a)["railway"="tram_stop"]',
+                     'nwr(area.a)["railway"~"^(station|halt)$"]', "rel(bw.s)", "rel(bw.p)",
+                     'rel(br.r)["type"="route_master"]'):
+        assert selector in params["data"]
+
+
+# --- transport: one place under two names -----------------------------------
+
+GUILLOTIERE = (45.7553566, 4.8428297)
+
+
+def _at(point, east_metres=0.0, **tags):
+    lat, lon = point
+    return {"type": "node", "id": 1, "lat": lat, "lon": lon + east_metres / 77_800, "tags": tags}
+
+
+def _way_at(point, **tags):
+    return {"type": "way", "id": 2, "center": {"lat": point[0], "lon": point[1]}, "tags": tags}
+
+
+def test_close_stops_whose_names_share_leading_words_merge_to_the_shortest():
+    modes = transport.summarize([
+        _way_at(GUILLOTIERE, railway="station", station="subway", name="Guillotière"),
+        _at(GUILLOTIERE, 30, railway="station", station="subway", name="Guillotière - Gabriel Péri"),
+        _at(GUILLOTIERE, 600, railway="station", station="subway", name="Saxe - Gambetta"),
+        _at((48.8424, 2.3659), railway="station", name="Paris Austerlitz"),
+        _at((48.8424, 2.3659), 80, railway="station", network="RER", name="Paris Austerlitz RER"),
+    ])
+    assert modes["subway"]["stops"] == ["Guillotière", "Saxe - Gambetta"]
+    assert modes["train"]["stops"] == ["Paris Austerlitz"]
+
+
+def test_name_prefix_far_apart_does_not_merge():
+    modes = transport.summarize([
+        _at(GUILLOTIERE, railway="tram_stop", name="Guillotière"),
+        _at(GUILLOTIERE, 151, railway="tram_stop", name="Guillotière - Gabriel Péri"),
+    ])
+    assert modes["tram"]["stops"] == ["Guillotière", "Guillotière - Gabriel Péri"]
+
+
+def test_close_stops_without_a_name_prefix_do_not_merge():
+    modes = transport.summarize([
+        _at(GUILLOTIERE, railway="station", station="subway", name="Gambetta"),
+        _at(GUILLOTIERE, 10, railway="station", station="subway", name="Saxe - Gambetta"),
+        _at(GUILLOTIERE, 20, railway="station", station="subway", name="Guillotièreville"),
+        _at(GUILLOTIERE, 25, railway="station", station="subway", name="Guillotière"),
+    ])
+    assert modes["subway"]["stops"] == ["Gambetta", "Guillotière", "Guillotièreville", "Saxe - Gambetta"]
+
+
+def test_stop_without_coordinates_merges_only_on_the_same_name():
+    modes = transport.summarize([
+        _node(railway="station", station="subway", name="Guillotière"),
+        _at(GUILLOTIERE, railway="station", station="subway", name="Guillotière - Gabriel Péri"),
+        _node(railway="station", station="subway", name="Garibaldi"),
+        _at(GUILLOTIERE, 900, railway="station", station="subway", name="Garibaldi"),
+    ])
+    assert modes["subway"]["stops"] == ["Garibaldi", "Guillotière", "Guillotière - Gabriel Péri"]
+
+
+def test_merge_is_transitive():
+    modes = transport.summarize([
+        _at((48.8424, 2.3659), railway="station", name="Paris Austerlitz"),
+        _at((48.8424, 2.3659), 100, railway="station", name="Paris Austerlitz RER"),
+        _at((48.8424, 2.3659), 200, railway="station", name="Paris Austerlitz RER C"),
+    ])
+    assert modes["train"]["stops"] == ["Paris Austerlitz"]
+
+
+def test_bus_stops_are_not_merged_by_proximity():
+    modes = transport.summarize([
+        _at(GUILLOTIERE, highway="bus_stop", name="Guillotière"),
+        _at(GUILLOTIERE, 10, highway="bus_stop", name="Guillotière - Gabriel Péri"),
+    ])
+    assert modes["bus"]["stops"] == ["Guillotière", "Guillotière - Gabriel Péri"]
+
+
+def test_distance_metres_is_haversine():
+    assert transport.distance_metres((48.8424, 2.3659), (48.8424, 2.3659)) == 0
+    assert 110_000 < transport.distance_metres((45.0, 4.8), (46.0, 4.8)) < 112_000
+
+
+def test_transport_query_asks_stop_coordinates(fake_net):
+    fake = fake_net([(transport.ENDPOINTS[0], lambda u, p: OVERPASS)])
+    transport.fetch("69383")
+    [(_, params)] = fake.calls
+    assert ".s out tags center;" in params["data"]
+
+
+# --- transport: long-distance coaches, boundary not found -------------------
+
+
+@pytest.mark.parametrize("tags", [
+    {"route": "bus", "ref": "N700", "network": "FlixBus"},
+    {"route": "bus", "ref": "112", "operator": "FlixBus France"},
+    {"route": "bus", "ref": "Paris - Lyon", "brand": "BlaBlaCar Bus"},
+    {"route": "bus", "ref": "Lyon - Madrid", "operator": "Eurolines"},
+    {"route": "bus", "ref": "X1", "network": "Cars Région Express", "service": "long_distance"},
+    {"route": "trolleybus", "ref": "T", "operator": "Flix"},
+])
+def test_long_distance_coaches_are_not_bus_lines(tags):
+    assert transport.route_mode(tags) is None
+
+
+@pytest.mark.parametrize("tags", [
+    {"route": "bus", "ref": "C9", "network": "TCL", "operator": "Keolis Lyon"},
+    {"route": "bus", "ref": "A71", "network": "Cars Région Ain", "operator": "Philibert"},
+    {"route": "bus", "ref": "X75", "network": "Cars Région Express", "operator": "SRADDA"},
+    {"route": "trolleybus", "ref": "C3", "network": "TCL"},
+])
+def test_urban_and_regional_buses_stay_bus_lines(tags):
+    assert transport.route_mode(tags) == "bus"
+
+
+def test_answer_without_area_falls_back_to_the_next_endpoint(fake_net):
+    def answer(url, params):
+        return {"elements": []} if url == transport.ENDPOINTS[0] else OVERPASS
+
+    fake = fake_net([("https://", answer)])
+    result = transport.fetch("69383")
+    assert result["endpoint"] == transport.ENDPOINTS[1]
+    assert [url for url, _ in fake.calls] == transport.ENDPOINTS[:2]
+
+
+def test_boundary_not_found_only_after_every_endpoint(fake_net, overpass_pauses):
+    fake = fake_net([("https://", lambda u, p: {"elements": []})])
+    with pytest.raises(transport.BoundaryNotFound, match="ref:INSEE=99999"):
+        transport.fetch("99999")
+    assert [url for url, _ in fake.calls] == transport.ENDPOINTS
+    assert overpass_pauses == []
+
+
+def test_boundary_not_found_when_the_only_answer_has_no_area(fake_net, overpass_pauses):
+    def answer(url, params):
+        if url == transport.ENDPOINTS[1]:
+            return {"elements": []}
+        return requests.ReadTimeout("slow")
+
+    fake_net([("https://", answer)])
+    with pytest.raises(transport.BoundaryNotFound) as raised:
+        transport.fetch("99999")
+    assert "ReadTimeout" in str(raised.value) and "no area" in str(raised.value)
+
+
+def test_no_answer_at_all_is_not_a_missing_boundary(fake_net, overpass_pauses):
+    fake_net([("https://", lambda u, p: requests.ReadTimeout("slow"))])
+    with pytest.raises(transport.OverpassError) as raised:
+        transport.fetch("69383")
+    assert not isinstance(raised.value, transport.BoundaryNotFound)
+
+
+@pytest.mark.parametrize("tags", [
+    {"route": "bus", "ref": "N01", "network": "Noctilien", "service": "night"},
+    {"route": "bus", "ref": "PL4", "network": "TCL", "service": "night"},
+    {"route": "bus", "ref": "X75", "network": "Cars Région Express", "service": "national"},
+    {"route": "trolleybus", "ref": "C3", "network": "TCL", "service": "night"},
+])
+def test_night_and_national_buses_stay_bus_lines(tags):
+    assert transport.route_mode(tags) == "bus"
+
+
+def test_international_bus_service_is_a_coach():
+    assert transport.route_mode({"route": "bus", "ref": "Lyon - Genève", "service": "international"}) is None

@@ -106,9 +106,10 @@ listed and nothing is picked.
 | Tap water compliance | [Hub'Eau](https://hubeau.eaufrance.fr) `qualite_eau_potable` |
 | Recorded crime: burglaries, thefts, violent thefts, armed robberies, assaults outside the family, vandalism | Communal base of crime recorded by the police and gendarmerie, Ministère de l'Intérieur, on data.gouv.fr |
 | Fibre (FTTH) coverage | « Indicateur France Très Haut Débit », ANCT, via the data.gouv.fr Tabular API |
+| Public transport: metro, tram, bus and regional train lines and stops | [OpenStreetMap](https://www.openstreetmap.org/copyright) via the [Overpass API](https://overpass-api.de) — © OpenStreetMap contributors, ODbL |
 
 Risks, water and fibre are only published per commune: for a Paris, Lyon or Marseille arrondissement
-they are read for the whole city, and the output says so. Crime is published per arrondissement.
+they are read for the whole city, and the output says so. Crime and transport are read per arrondissement.
 A source that fails shows its error; the others still render.
 
 Crime shows, for the latest year, the count, the rate per 1,000 inhabitants — per 1,000 dwellings for
@@ -117,6 +118,23 @@ withholds for statistical secrecy shows as `masked`. The crime file (about 40 MB
 first use, indexed, and kept in `$DATAGOUV_CACHE`, by default `%LOCALAPPDATA%\brain-tools\datagouv`
 on Windows and `~/.cache/brain-tools/datagouv` elsewhere. It is downloaded again only when the
 ministry publishes a new file.
+
+Transport counts, per mode, the lines with at least one stop or platform in the town, and the stops,
+distinct by name — accents, case and punctuation aside. Lines are counted by ref: a route takes the refs
+of the route master that groups its directions when the master has one, otherwise its own refs, and
+when neither has a ref, the master's name, else the route's. Refs compare without accents, case,
+punctuation, spaces or leading zeros, so two lines with the same ref count once even on two networks,
+and a ref `a;b` counts as two lines. Light rail counts as tram, trolleybus as bus. Bus lines leave out
+long-distance coaches: a `long_distance` or `international` service, or a FlixBus, BlaBlaCar,
+Eurolines, Ouibus or Alsa network, operator or brand; night buses stay. Trains are regional and
+commuter lines only — network TER, RER or Transilien, or a regional, commuter or suburban service —
+never a TGV, Ouigo, Intercités or ICE, nor a `long_distance`, `high_speed`, `night`, `national` or
+`international` service. A metro, tram or train stop mapped twice — `Guillotière`
+and `Guillotière - Gabriel Péri` — counts once when the points are within 150 m and one name is the
+start of the other; it keeps the shorter name. Metro and tram stations and train stations are named
+when there are eight or fewer. The Overpass servers are often busy: three public endpoints are tried
+in turn, and the cells show an error when all of them fail. A town is reported without an
+OpenStreetMap boundary only when an endpoint answered without finding one and no other found it.
 
 ## Configuration
 
